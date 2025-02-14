@@ -457,8 +457,8 @@ public class LargeGridPathfindingGame : Game
             int height = 1000;
             int agentCount = 10000;
 
-            bool pathRandomization = true; // Randomize path costs to prevent agents from following the same path
-            bool penalizeStretchedRectangles = true; // (EXPERIMENTAL) Penalize paths that go through stretched rectangles to prevent too many agents in a small area
+            bool pathRandomization = false; // Randomize path costs to prevent agents from following the same path
+            bool penalizeStretchedRectangles = false; // (EXPERIMENTAL) Penalize paths that go through stretched rectangles to prevent too many agents in a small area
 
             for (int i = 0; i < agentCount; i++)
             {
