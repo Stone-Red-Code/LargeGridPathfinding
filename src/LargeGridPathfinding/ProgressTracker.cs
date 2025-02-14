@@ -37,10 +37,7 @@ internal class ProgressTracker
     {
         lock (progresses)
         {
-            if (!progressData.DoNotRemove)
-            {
-                _ = progresses.Remove(progressData);
-            }
+            _ = progresses.Remove(progressData);
         }
     }
 
@@ -53,7 +50,7 @@ internal class ProgressTracker
     {
         progressData.Progress = progress;
 
-        if (progress >= 1)
+        if (progress >= 1 && !progressData.DoNotRemove)
         {
             RemoveProgress(progressData);
         }
