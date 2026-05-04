@@ -11,6 +11,8 @@ namespace LargeGridPathfinding;
 
 internal class GridFiller
 {
+    private const int RecalculationRadius = 24;
+    private readonly object mutationLock = new();
     private int currentLabel = 1;
     private int currentObstacleLabel = -1;
     public int[,] Grid { get; }
@@ -35,221 +37,246 @@ internal class GridFiller
             }
         }
 
-        foreach (Rectangle rectangle in obstacles)
-        {
-            PlaceObstacle(rectangle);
-        }
+        PlaceObstacles(obstacles);
     }
 
     public void FillGrid(int? x1 = null, int? y1 = null, int? x2 = null, int? y2 = null, bool fillAll = false, IProgress<float>? totalProgress = null, IProgress<float>? calculatingCandidatesProgress = null, IProgress<float>? placingCandidatesProgress = null)
     {
-        x1 ??= 0;
-        y1 ??= 0;
-        x2 ??= Width;
-        y2 ??= Height;
-
-        if (fillAll)
+        lock (mutationLock)
         {
-            PlacedRectangles.Clear();
-            for (int y = y1.Value; y < y2; y++)
+            x1 ??= 0;
+            y1 ??= 0;
+            x2 ??= Width;
+            y2 ??= Height;
+
+            if (fillAll)
             {
-                for (int x = x1.Value; x < x2; x++)
+                PlacedRectangles.Clear();
+                for (int y = y1.Value; y < y2; y++)
                 {
-                    if (Grid[y, x] > 0)
+                    for (int x = x1.Value; x < x2; x++)
                     {
-                        Grid[y, x] = 0;
+                        if (Grid[y, x] > 0)
+                        {
+                            Grid[y, x] = 0;
+                        }
                     }
                 }
             }
+
+            ConcurrentBag<(int x, int y, int w, int h, int weight)> candidates = [];
+
+            int cells = Grid.GetLength(0) * Grid.GetLength(1);
+            int areaPlaced = 0;
+            int maxRectangleSize = Math.Max((Grid.GetLength(0) + Grid.GetLength(1)) / 20, 100);
+            int reportInterval = Math.Max(cells / 100, 1);
+
+            do
+            {
+                candidates.Clear();
+
+                Debug.WriteLine("Calculating candidates...");
+
+                _ = Parallel.For(y1.Value, y2.Value, (y, loopState) =>
+                {
+                    for (int x = x1.Value; x < x2; x++)
+                    {
+                        if (Grid[y, x] == 0)
+                        {
+                            int tileWeight = WeightGrid[y, x];
+                            (int w, int h) = GetMaxRectangleSize(x, y, maxRectangleSize, maxRectangleSize, tileWeight);
+
+                            if (w > 0 && h > 0)
+                            {
+                                candidates.Add((x, y, w, h, tileWeight));
+                            }
+
+                            if (w >= maxRectangleSize && h >= maxRectangleSize)
+                            {
+                                loopState.Break();
+                                return;
+                            }
+
+                            if (candidates.Count % reportInterval == 0)
+                            {
+                                calculatingCandidatesProgress?.Report((float)candidates.Count / (cells - areaPlaced));
+                                Debug.WriteLine($"Candidates Progress: {candidates.Count} / {cells - areaPlaced} ({(float)candidates.Count / (cells - areaPlaced):P2})");
+                            }
+                        }
+                    }
+                });
+
+                Debug.WriteLine($"Candidates: {candidates.Count}");
+                Debug.WriteLine("Sorting candidates...");
+
+                List<(int x, int y, int w, int h, int weight)> sortedCandidates = [.. candidates];
+                sortedCandidates.Sort((a, b) =>
+                {
+                    int areaComparison = (b.w * b.h).CompareTo(a.w * a.h);
+                    if (areaComparison != 0)
+                    {
+                        return areaComparison;
+                    }
+
+                    int stretchA = GetStretchFactor(a.w, a.h);
+                    int stretchB = GetStretchFactor(b.w, b.h);
+                    int stretchComparison = stretchA.CompareTo(stretchB);
+                    if (stretchComparison != 0)
+                    {
+                        return stretchComparison;
+                    }
+
+                    return b.h.CompareTo(a.h);
+                });
+
+                Debug.WriteLine("Placing rectangles...");
+
+                int placed = 0;
+                int reportIntervalPlacing = Math.Max(sortedCandidates.Count / 10, 1);
+
+                foreach ((int x, int y, int w, int h, int weight) in sortedCandidates)
+                {
+                    if (IsAreaFree(x, y, w, h, weight))
+                    {
+                        Rectangle rectangle = new Rectangle(x, y, w, h);
+                        PlaceRectangle(rectangle);
+                        areaPlaced += w * h;
+                    }
+
+                    placed++;
+
+                    if (placed % reportIntervalPlacing == 0)
+                    {
+                        totalProgress?.Report((float)areaPlaced / cells);
+                        placingCandidatesProgress?.Report((float)placed / (sortedCandidates.Count + 1));
+                        Debug.WriteLine($"Placed Progress: {placed} / {sortedCandidates.Count} ({(float)placed / sortedCandidates.Count:P2})");
+                    }
+                }
+
+                totalProgress?.Report((float)areaPlaced / cells);
+            } while (!candidates.IsEmpty);
+
+            totalProgress?.Report(1);
+            calculatingCandidatesProgress?.Report(1);
+            placingCandidatesProgress?.Report(1);
         }
-
-        // Collect all valid rectangle placements
-        ConcurrentBag<(int x, int y, int w, int h, int weight)> candidates = [];
-
-        int cells = Grid.GetLength(0) * Grid.GetLength(1);
-        int areaPlaced = 0;
-        int maxRectangleSize = Math.Max((Grid.GetLength(0) + Grid.GetLength(1)) / 20, 100);
-        int reportInterval = cells / 100;
-
-        do
-        {
-            candidates.Clear();
-
-            Debug.WriteLine("Calculating candidates...");
-
-            // Calculate all possible rectangle placements
-            _ = Parallel.For(y1.Value, y2.Value, (y, loopState) =>
-            {
-                for (int x = x1.Value; x < x2; x++)
-                {
-                    if (Grid[y, x] == 0)
-                    {
-                        int tileWeight = WeightGrid[y, x];
-                        (int w, int h) = GetMaxRectangleSize(x, y, maxRectangleSize, maxRectangleSize, tileWeight);
-
-                        if (w > 0 && h > 0)
-                        {
-                            candidates.Add((x, y, w, h, tileWeight));
-                        }
-
-                        if (w >= maxRectangleSize && h >= maxRectangleSize)
-                        {
-                            loopState.Break();
-                            return;
-                        }
-
-                        if (candidates.Count % reportInterval == 0)
-                        {
-                            calculatingCandidatesProgress?.Report((float)candidates.Count / (cells - areaPlaced));
-                            Debug.WriteLine($"Candidates Progress: {candidates.Count} / {cells - areaPlaced} ({(float)candidates.Count / (cells - areaPlaced):P2})");
-                        }
-                    }
-                }
-            });
-
-            Debug.WriteLine($"Candidates: {candidates.Count}");
-            Debug.WriteLine("Sorting candidates...");
-
-            // Sort by area (largest first) and prefer less stretched rectangles on ties
-            List<(int x, int y, int w, int h, int weight)> sortedCandidates = [.. candidates];
-            sortedCandidates.Sort((a, b) =>
-            {
-                int areaComparison = (b.w * b.h).CompareTo(a.w * a.h);
-                if (areaComparison != 0)
-                {
-                    return areaComparison;
-                }
-
-                int stretchA = GetStretchFactor(a.w, a.h);
-                int stretchB = GetStretchFactor(b.w, b.h);
-                int stretchComparison = stretchA.CompareTo(stretchB);
-                if (stretchComparison != 0)
-                {
-                    return stretchComparison;
-                }
-
-                return b.h.CompareTo(a.h);
-            });
-
-            Debug.WriteLine("Placing rectangles...");
-
-            int placed = 0;
-            int reportIntervalPlacing = Math.Max(sortedCandidates.Count / 10, 1);
-
-            // Place rectangles, ensuring no overlap
-            foreach ((int x, int y, int w, int h, int weight) in sortedCandidates)
-            {
-                // Check if area is still free
-                if (IsAreaFree(x, y, w, h, weight))
-                {
-                    Rectangle rectangle = new Rectangle(x, y, w, h);
-                    PlaceRectangle(rectangle);
-                    areaPlaced += w * h;
-                }
-
-                placed++;
-
-                if (placed % reportIntervalPlacing == 0)
-                {
-                    totalProgress?.Report((float)areaPlaced / cells);
-                    placingCandidatesProgress?.Report((float)placed / (sortedCandidates.Count + 1));
-                    Debug.WriteLine($"Placed Progress: {placed} / {sortedCandidates.Count} ({(float)placed / sortedCandidates.Count:P2})");
-                }
-            }
-
-            totalProgress?.Report((float)areaPlaced / cells);
-        } while (!candidates.IsEmpty);
-
-        totalProgress?.Report(1);
-        calculatingCandidatesProgress?.Report(1);
-        placingCandidatesProgress?.Report(1);
     }
 
     public void PlaceObstacle(Rectangle rectangle)
     {
-        // Check area around the rectangle to update all adjacent rectangles
+        PlaceObstacles([rectangle]);
+    }
 
-        int y = int.Clamp(rectangle.Y - 1, 0, Height);
-        int x = int.Clamp(rectangle.X - 1, 0, Width);
-        int h = int.Clamp(rectangle.Y + rectangle.Height + 2, 0, Height);
-        int w = int.Clamp(rectangle.X + rectangle.Width + 2, 0, Width);
-
-        List<Rectangle> removedRectangles = [new Rectangle(x, y, w - x, h - y)];
-
-        int obstacle = currentObstacleLabel--;
-
-        for (int dy = y; dy < h; dy++)
+    public void PlaceObstacles(IEnumerable<Rectangle> rectangles)
+    {
+        lock (mutationLock)
         {
-            for (int dx = x; dx < w; dx++)
+            List<Rectangle> clampedRectangles = [.. rectangles
+                .Select(ClampToGrid)
+                .Where(r => r != Rectangle.Empty)];
+
+            if (clampedRectangles.Count == 0)
             {
-                if (Grid[dy, dx] > 0 && PlacedRectangles.ContainsKey(Grid[dy, dx]))
+                return;
+            }
+
+            int minX = Width;
+            int minY = Height;
+            int maxX = -1;
+            int maxY = -1;
+            bool changed = false;
+
+            foreach (Rectangle rectangle in clampedRectangles)
+            {
+                for (int dy = rectangle.Top; dy < rectangle.Bottom; dy++)
                 {
-                    removedRectangles.Add(RemoveRectangle(Grid[dy, dx]));
+                    for (int dx = rectangle.Left; dx < rectangle.Right; dx++)
+                    {
+                        if (Grid[dy, dx] >= 0)
+                        {
+                            changed = true;
+                        }
+                    }
                 }
 
-                if (Grid[dy, dx] >= 0 && dy < rectangle.Y + rectangle.Height && dx < rectangle.X + rectangle.Width && dy >= rectangle.Y && dx >= rectangle.X)
+                minX = Math.Min(minX, rectangle.Left);
+                minY = Math.Min(minY, rectangle.Top);
+                maxX = Math.Max(maxX, rectangle.Right);
+                maxY = Math.Max(maxY, rectangle.Bottom);
+            }
+
+            if (changed)
+            {
+                RecalculateAroundArea(minX, minY, maxX, maxY, () =>
                 {
-                    Grid[dy, dx] = obstacle;
-                    WeightGrid[dy, dx] = 1;
-                }
+                    foreach (Rectangle rectangle in clampedRectangles)
+                    {
+                        int obstacle = currentObstacleLabel--;
+
+                        for (int dy = rectangle.Top; dy < rectangle.Bottom; dy++)
+                        {
+                            for (int dx = rectangle.Left; dx < rectangle.Right; dx++)
+                            {
+                                if (Grid[dy, dx] >= 0)
+                                {
+                                    Grid[dy, dx] = obstacle;
+                                    WeightGrid[dy, dx] = 1;
+                                }
+                            }
+                        }
+                    }
+                });
             }
         }
 
-        if (removedRectangles.Count == 1)
-        {
-            return;
-        }
-
-        int minStartX = removedRectangles.Min(r => r.X);
-        int minStartY = removedRectangles.Min(r => r.Y);
-        int maxEndX = removedRectangles.Max(r => r.X + r.Width);
-        int maxEndY = removedRectangles.Max(r => r.Y + r.Height);
-
-        FillGrid(minStartX, minStartY, maxEndX, maxEndY);
-
         Debug.WriteLine("Placed obstacle");
-        Debug.WriteLine($"Placed obstacle {rectangle.X}, {rectangle.Y}, {rectangle.Width}, {rectangle.Height}");
-        Debug.WriteLine($"minX: {minStartX}, minY: {minStartY}, maxX: {maxEndX}, maxY: {maxEndY}");
     }
 
     public void RemoveObstacle(Rectangle rectangle)
     {
-        // Check area around the rectangle to update all adjacent rectangles
-
-        int y = int.Clamp(rectangle.Y - 1, 0, Height);
-        int x = int.Clamp(rectangle.X - 1, 0, Width);
-        int h = int.Clamp(rectangle.Y + rectangle.Height + 2, 0, Height);
-        int w = int.Clamp(rectangle.X + rectangle.Width + 2, 0, Width);
-
-        List<Rectangle> removedRectangles = [new Rectangle(x, y, w - x, h - y)];
-
-        for (int dy = y; dy < h; dy++)
+        lock (mutationLock)
         {
-            for (int dx = x; dx < w; dx++)
+            Rectangle clampedRectangle = ClampToGrid(rectangle);
+            if (clampedRectangle == Rectangle.Empty)
             {
-                if (Grid[dy, dx] > 0)
-                {
-                    removedRectangles.Add(RemoveRectangle(Grid[dy, dx]));
-                }
+                return;
+            }
 
-                if (Grid[dy, dx] < 0 && dy < rectangle.Y + rectangle.Height && dx < rectangle.X + rectangle.Width && dy >= rectangle.Y && dx >= rectangle.X)
+            bool changed = false;
+
+            for (int dy = clampedRectangle.Top; dy < clampedRectangle.Bottom; dy++)
+            {
+                for (int dx = clampedRectangle.Left; dx < clampedRectangle.Right; dx++)
                 {
-                    Grid[dy, dx] = 0;
-                    WeightGrid[dy, dx] = 1;
+                    if (Grid[dy, dx] < 0)
+                    {
+                        Grid[dy, dx] = 0;
+                        WeightGrid[dy, dx] = 1;
+                        changed = true;
+                    }
                 }
+            }
+
+            if (changed)
+            {
+                RecalculateAroundArea(clampedRectangle.Left, clampedRectangle.Top, clampedRectangle.Right, clampedRectangle.Bottom, () =>
+                {
+                    for (int dy = clampedRectangle.Top; dy < clampedRectangle.Bottom; dy++)
+                    {
+                        for (int dx = clampedRectangle.Left; dx < clampedRectangle.Right; dx++)
+                        {
+                            if (Grid[dy, dx] < 0)
+                            {
+                                Grid[dy, dx] = 0;
+                                WeightGrid[dy, dx] = 1;
+                            }
+                        }
+                    }
+                });
             }
         }
 
-        int minStartX = removedRectangles.Min(r => r.X);
-        int minStartY = removedRectangles.Min(r => r.Y);
-        int maxEndX = removedRectangles.Max(r => r.X + r.Width);
-        int maxEndY = removedRectangles.Max(r => r.Y + r.Height);
-
-        FillGrid(minStartX, minStartY, maxEndX, maxEndY);
-
         Debug.WriteLine("Removed obstacle");
-        Debug.WriteLine($"Placed obstacle {rectangle.X}, {rectangle.Y}, {rectangle.Width}, {rectangle.Height}");
-        Debug.WriteLine($"minX: {minStartX}, minY: {minStartY}, maxX: {maxEndX}, maxY: {maxEndY}");
     }
 
     public void SetTileWeight(int x, int y, int weight)
@@ -264,64 +291,45 @@ internal class GridFiller
 
     public void SetTileWeights(IEnumerable<Point> points, int weight)
     {
-        int clampedWeight = Math.Max(1, weight);
-        HashSet<Point> changedPoints = [];
-
-        int minX = Width;
-        int minY = Height;
-        int maxX = -1;
-        int maxY = -1;
-
-        foreach (Point point in points)
+        lock (mutationLock)
         {
-            if (point.X < 0 || point.Y < 0 || point.X >= Width || point.Y >= Height || Grid[point.Y, point.X] < 0 || WeightGrid[point.Y, point.X] == clampedWeight)
+            int clampedWeight = Math.Max(1, weight);
+            int minX = Width;
+            int minY = Height;
+            int maxX = -1;
+            int maxY = -1;
+            bool changed = false;
+
+            foreach (Point point in points)
             {
-                continue;
-            }
-
-            _ = changedPoints.Add(point);
-            minX = Math.Min(minX, point.X);
-            minY = Math.Min(minY, point.Y);
-            maxX = Math.Max(maxX, point.X);
-            maxY = Math.Max(maxY, point.Y);
-        }
-
-        if (changedPoints.Count == 0)
-        {
-            return;
-        }
-
-        int x = int.Clamp(minX - 1, 0, Width);
-        int y = int.Clamp(minY - 1, 0, Height);
-        int w = int.Clamp(maxX + 2, 0, Width);
-        int h = int.Clamp(maxY + 2, 0, Height);
-
-        List<Rectangle> removedRectangles = [new Rectangle(x, y, w - x, h - y)];
-        HashSet<int> removedLabels = [];
-
-        for (int dy = y; dy < h; dy++)
-        {
-            for (int dx = x; dx < w; dx++)
-            {
-                int label = Grid[dy, dx];
-                if (label > 0 && removedLabels.Add(label))
+                if (point.X < 0 || point.Y < 0 || point.X >= Width || point.Y >= Height || Grid[point.Y, point.X] < 0 || WeightGrid[point.Y, point.X] == clampedWeight)
                 {
-                    removedRectangles.Add(RemoveRectangle(label));
+                    continue;
                 }
+
+                changed = true;
+                minX = Math.Min(minX, point.X);
+                minY = Math.Min(minY, point.Y);
+                maxX = Math.Max(maxX, point.X + 1);
+                maxY = Math.Max(maxY, point.Y + 1);
+            }
+
+            if (changed)
+            {
+                RecalculateAroundArea(minX, minY, maxX, maxY, () =>
+                {
+                    foreach (Point point in points)
+                    {
+                        if (point.X < 0 || point.Y < 0 || point.X >= Width || point.Y >= Height || Grid[point.Y, point.X] < 0)
+                        {
+                            continue;
+                        }
+
+                        WeightGrid[point.Y, point.X] = clampedWeight;
+                    }
+                });
             }
         }
-
-        foreach (Point point in changedPoints)
-        {
-            WeightGrid[point.Y, point.X] = clampedWeight;
-        }
-
-        int minStartX = removedRectangles.Min(r => r.X);
-        int minStartY = removedRectangles.Min(r => r.Y);
-        int maxEndX = removedRectangles.Max(r => r.X + r.Width);
-        int maxEndY = removedRectangles.Max(r => r.Y + r.Height);
-
-        FillGrid(minStartX, minStartY, maxEndX, maxEndY);
     }
 
     public void ResetTileWeights(IEnumerable<Point> points)
@@ -329,14 +337,13 @@ internal class GridFiller
         SetTileWeights(points, 1);
     }
 
-    // Helper method to check if a rectangle can still be placed
     private bool IsAreaFree(int x, int y, int w, int h, int requiredWeight)
     {
         for (int dy = 0; dy < h; dy++)
         {
             for (int dx = 0; dx < w; dx++)
             {
-                if (Grid[y + dy, x + dx] != 0 || WeightGrid[y + dy, x + dx] != requiredWeight) // Not empty or mismatched weight
+                if (Grid[y + dy, x + dx] != 0 || WeightGrid[y + dy, x + dx] != requiredWeight)
                 {
                     return false;
                 }
@@ -428,6 +435,73 @@ internal class GridFiller
         return rectangle;
     }
 
+    private void RecalculateAroundArea(int minX, int minY, int maxX, int maxY, Action applyChanges)
+    {
+        int left = int.Clamp(minX - RecalculationRadius, 0, Width);
+        int top = int.Clamp(minY - RecalculationRadius, 0, Height);
+        int right = int.Clamp(maxX + RecalculationRadius, 0, Width);
+        int bottom = int.Clamp(maxY + RecalculationRadius, 0, Height);
+
+        if (left >= right || top >= bottom)
+        {
+            applyChanges();
+            return;
+        }
+
+        HashSet<int> labelsToRemove = [];
+        for (int y = top; y < bottom; y++)
+        {
+            for (int x = left; x < right; x++)
+            {
+                int label = Grid[y, x];
+                if (label > 0)
+                {
+                    _ = labelsToRemove.Add(label);
+                }
+            }
+        }
+
+        List<Rectangle> removedRectangles = [];
+        foreach (int label in labelsToRemove)
+        {
+            Rectangle removed = RemoveRectangle(label);
+            if (removed != Rectangle.Empty)
+            {
+                removedRectangles.Add(removed);
+            }
+        }
+
+        if (removedRectangles.Count == 0)
+        {
+            applyChanges();
+            FillGrid(left, top, right, bottom);
+            return;
+        }
+
+        int fillLeft = Math.Min(left, removedRectangles.Min(r => r.Left));
+        int fillTop = Math.Min(top, removedRectangles.Min(r => r.Top));
+        int fillRight = Math.Max(right, removedRectangles.Max(r => r.Right));
+        int fillBottom = Math.Max(bottom, removedRectangles.Max(r => r.Bottom));
+
+        applyChanges();
+        FillGrid(fillLeft, fillTop, fillRight, fillBottom);
+    }
+
+    private Rectangle ClampToGrid(Rectangle rectangle)
+    {
+        int left = int.Clamp(rectangle.Left, 0, Width);
+        int top = int.Clamp(rectangle.Top, 0, Height);
+        int right = int.Clamp(rectangle.Right, 0, Width);
+        int bottom = int.Clamp(rectangle.Bottom, 0, Height);
+
+        if (right <= left || bottom <= top)
+        {
+            return Rectangle.Empty;
+        }
+
+        return new Rectangle(left, top, right - left, bottom - top);
+    }
+
     private int GetRowContinuousWidth(int startX, int y, int maxWidth, int requiredWeight)
     {
         int width = 0;
@@ -457,5 +531,4 @@ internal class GridFiller
         int maxSide = Math.Max(width, height);
         return maxSide / minSide;
     }
-
 }

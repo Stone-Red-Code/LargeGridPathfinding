@@ -286,13 +286,8 @@ public class LargeGridPathfindingGame : Game
                 }
                 else
                 {
-                    foreach (Point point in brushPoints)
-                    {
-                        if (point.X >= 0 && point.Y >= 0 && point.X < gridFiller.Width && point.Y < gridFiller.Height && gridFiller.Grid[point.Y, point.X] >= 0)
-                        {
-                            gridFiller.PlaceObstacle(new Rectangle(point.X, point.Y, 1, 1));
-                        }
-                    }
+                    List<Rectangle> obstacleRectangles = [.. brushPoints.Select(point => new Rectangle(point.X, point.Y, 1, 1))];
+                    gridFiller.PlaceObstacles(obstacleRectangles);
                 }
 
                 foreach (Point point in brushPoints)
