@@ -234,41 +234,62 @@ internal class GridFiller
 
     public void RemoveObstacle(Rectangle rectangle)
     {
+        RemoveObstacles([rectangle]);
+    }
+
+    public void RemoveObstacles(IEnumerable<Rectangle> rectangles)
+    {
         lock (mutationLock)
         {
-            Rectangle clampedRectangle = ClampToGrid(rectangle);
-            if (clampedRectangle == Rectangle.Empty)
+            List<Rectangle> clampedRectangles = [.. rectangles
+                .Select(ClampToGrid)
+                .Where(r => r != Rectangle.Empty)];
+
+            if (clampedRectangles.Count == 0)
             {
                 return;
             }
 
+            int minX = Width;
+            int minY = Height;
+            int maxX = -1;
+            int maxY = -1;
             bool changed = false;
 
-            for (int dy = clampedRectangle.Top; dy < clampedRectangle.Bottom; dy++)
+            foreach (Rectangle rectangle in clampedRectangles)
             {
-                for (int dx = clampedRectangle.Left; dx < clampedRectangle.Right; dx++)
+                for (int dy = rectangle.Top; dy < rectangle.Bottom; dy++)
                 {
-                    if (Grid[dy, dx] < 0)
+                    for (int dx = rectangle.Left; dx < rectangle.Right; dx++)
                     {
-                        Grid[dy, dx] = 0;
-                        WeightGrid[dy, dx] = 1;
-                        changed = true;
+                        if (Grid[dy, dx] < 0)
+                        {
+                            changed = true;
+                        }
                     }
                 }
+
+                minX = Math.Min(minX, rectangle.Left);
+                minY = Math.Min(minY, rectangle.Top);
+                maxX = Math.Max(maxX, rectangle.Right);
+                maxY = Math.Max(maxY, rectangle.Bottom);
             }
 
             if (changed)
             {
-                RecalculateAroundArea(clampedRectangle.Left, clampedRectangle.Top, clampedRectangle.Right, clampedRectangle.Bottom, () =>
+                RecalculateAroundArea(minX, minY, maxX, maxY, () =>
                 {
-                    for (int dy = clampedRectangle.Top; dy < clampedRectangle.Bottom; dy++)
+                    foreach (Rectangle rectangle in clampedRectangles)
                     {
-                        for (int dx = clampedRectangle.Left; dx < clampedRectangle.Right; dx++)
+                        for (int dy = rectangle.Top; dy < rectangle.Bottom; dy++)
                         {
-                            if (Grid[dy, dx] < 0)
+                            for (int dx = rectangle.Left; dx < rectangle.Right; dx++)
                             {
-                                Grid[dy, dx] = 0;
-                                WeightGrid[dy, dx] = 1;
+                                if (Grid[dy, dx] < 0)
+                                {
+                                    Grid[dy, dx] = 0;
+                                    WeightGrid[dy, dx] = 1;
+                                }
                             }
                         }
                     }

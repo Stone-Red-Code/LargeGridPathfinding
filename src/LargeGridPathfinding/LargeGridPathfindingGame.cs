@@ -23,7 +23,19 @@ public class LargeGridPathfindingGame : Game
         Obstacle
     }
 
+    private enum PendingOperationKind
+    {
+        SetWeight,
+        ResetWeight,
+        PlaceObstacle,
+        RemoveObstacle
+    }
+
+    private readonly record struct PendingOperation(PendingOperationKind Kind, int Weight);
+
     private readonly ConcurrentDictionary<Vector2, Color> temporaryIndicators = [];
+    private readonly Dictionary<Point, PendingOperation> pendingOperations = [];
+    private readonly object pendingOperationsLock = new();
     private readonly ProgressTracker progressTracker = new ProgressTracker();
     private readonly List<Agent> agents = [];
     private SpriteBatch spriteBatch = null!;
@@ -40,6 +52,7 @@ public class LargeGridPathfindingGame : Game
     private BrushMode brushMode = BrushMode.Weight;
     private int paintWeight = 5;
     private Vector2? previousMousePosition;
+    private bool batchProcessingScheduled;
 
     public LargeGridPathfindingGame()
     {
@@ -268,36 +281,19 @@ public class LargeGridPathfindingGame : Game
             Color indicatorColor = brushMode == BrushMode.Weight ? Color.Orange : Color.Red;
             BrushMode currentBrushMode = brushMode;
             int currentPaintWeight = paintWeight;
-            temporaryIndicators[gridPosition] = indicatorColor;
-
             previousMousePosition = mousePosition;
 
-            _ = Task.Run(() =>
+            List<Point> brushPoints = GetBrushPoints(gridPosition, previousGridPosition);
+            foreach (Point point in brushPoints)
             {
-                List<Point> brushPoints = GetBrushPoints(gridPosition, previousGridPosition);
-                foreach (Point point in brushPoints)
-                {
-                    temporaryIndicators[point.ToVector2()] = indicatorColor;
-                }
+                temporaryIndicators[point.ToVector2()] = indicatorColor;
+            }
 
-                if (currentBrushMode == BrushMode.Weight)
-                {
-                    gridFiller.SetTileWeights(brushPoints, currentPaintWeight);
-                }
-                else
-                {
-                    List<Rectangle> obstacleRectangles = [.. brushPoints.Select(point => new Rectangle(point.X, point.Y, 1, 1))];
-                    gridFiller.PlaceObstacles(obstacleRectangles);
-                }
+            PendingOperation pendingOperation = currentBrushMode == BrushMode.Weight
+                ? new PendingOperation(PendingOperationKind.SetWeight, currentPaintWeight)
+                : new PendingOperation(PendingOperationKind.PlaceObstacle, 0);
 
-                foreach (Point point in brushPoints)
-                {
-                    _ = temporaryIndicators.TryRemove(point.ToVector2(), out _);
-                }
-
-                gridChanged = true;
-                _ = temporaryIndicators.TryRemove(gridPosition, out _);
-            });
+            EnqueuePendingOperations(brushPoints, pendingOperation);
         }
         else if (mouseState.IsButtonDown(MouseButton.Right))
         {
@@ -323,41 +319,19 @@ public class LargeGridPathfindingGame : Game
 
             Color indicatorColor = brushMode == BrushMode.Weight ? Color.LightGray : Color.Yellow;
             BrushMode currentBrushMode = brushMode;
-            temporaryIndicators[gridPosition] = indicatorColor;
-
             previousMousePosition = mousePosition;
 
-            _ = Task.Run(() =>
+            List<Point> brushPoints = GetBrushPoints(gridPosition, previousGridPosition);
+            foreach (Point point in brushPoints)
             {
-                List<Point> brushPoints = GetBrushPoints(gridPosition, previousGridPosition);
-                foreach (Point point in brushPoints)
-                {
-                    temporaryIndicators[point.ToVector2()] = indicatorColor;
-                }
+                temporaryIndicators[point.ToVector2()] = indicatorColor;
+            }
 
-                if (currentBrushMode == BrushMode.Weight)
-                {
-                    gridFiller.ResetTileWeights(brushPoints);
-                }
-                else
-                {
-                    foreach (Point point in brushPoints)
-                    {
-                        if (point.X >= 0 && point.Y >= 0 && point.X < gridFiller.Width && point.Y < gridFiller.Height && gridFiller.Grid[point.Y, point.X] < 0)
-                        {
-                            gridFiller.RemoveObstacle(new Rectangle(point.X, point.Y, 1, 1));
-                        }
-                    }
-                }
+            PendingOperation pendingOperation = currentBrushMode == BrushMode.Weight
+                ? new PendingOperation(PendingOperationKind.ResetWeight, 0)
+                : new PendingOperation(PendingOperationKind.RemoveObstacle, 0);
 
-                foreach (Point point in brushPoints)
-                {
-                    _ = temporaryIndicators.TryRemove(point.ToVector2(), out _);
-                }
-
-                gridChanged = true;
-                _ = temporaryIndicators.TryRemove(gridPosition, out _);
-            });
+            EnqueuePendingOperations(brushPoints, pendingOperation);
         }
         else
         {
@@ -710,6 +684,89 @@ public class LargeGridPathfindingGame : Game
         goal ??= new Point(goalX, goalY);
 
         return pathfinder.FindPath(start.Value, goal.Value);
+    }
+
+    private void EnqueuePendingOperations(IEnumerable<Point> points, PendingOperation operation)
+    {
+        lock (pendingOperationsLock)
+        {
+            foreach (Point point in points)
+            {
+                pendingOperations[point] = operation;
+            }
+
+            if (batchProcessingScheduled)
+            {
+                return;
+            }
+
+            batchProcessingScheduled = true;
+        }
+
+        _ = Task.Run(ProcessPendingOperations);
+    }
+
+    private void ProcessPendingOperations()
+    {
+        while (true)
+        {
+            KeyValuePair<Point, PendingOperation>[] operationsBatch;
+
+            lock (pendingOperationsLock)
+            {
+                if (pendingOperations.Count == 0)
+                {
+                    batchProcessingScheduled = false;
+                    return;
+                }
+
+                operationsBatch = [.. pendingOperations];
+                pendingOperations.Clear();
+            }
+
+            IGrouping<int, Point>[] weightGroups = [.. operationsBatch
+                .Where(op => op.Value.Kind == PendingOperationKind.SetWeight)
+                .GroupBy(op => op.Value.Weight, op => op.Key)];
+
+            Point[] resetWeightPoints = [.. operationsBatch
+                .Where(op => op.Value.Kind == PendingOperationKind.ResetWeight)
+                .Select(op => op.Key)];
+
+            Rectangle[] placeObstacleRectangles = [.. operationsBatch
+                .Where(op => op.Value.Kind == PendingOperationKind.PlaceObstacle)
+                .Select(op => new Rectangle(op.Key.X, op.Key.Y, 1, 1))];
+
+            Rectangle[] removeObstacleRectangles = [.. operationsBatch
+                .Where(op => op.Value.Kind == PendingOperationKind.RemoveObstacle)
+                .Select(op => new Rectangle(op.Key.X, op.Key.Y, 1, 1))];
+
+            foreach (IGrouping<int, Point> weightGroup in weightGroups)
+            {
+                gridFiller.SetTileWeights(weightGroup, weightGroup.Key);
+            }
+
+            if (resetWeightPoints.Length > 0)
+            {
+                gridFiller.ResetTileWeights(resetWeightPoints);
+            }
+
+            if (placeObstacleRectangles.Length > 0)
+            {
+                gridFiller.PlaceObstacles(placeObstacleRectangles);
+            }
+
+            if (removeObstacleRectangles.Length > 0)
+            {
+                gridFiller.RemoveObstacles(removeObstacleRectangles);
+            }
+
+            foreach (KeyValuePair<Point, PendingOperation> operation in operationsBatch)
+            {
+                _ = temporaryIndicators.TryRemove(operation.Key.ToVector2(), out _);
+            }
+
+            gridChanged = true;
+        }
     }
 
     private static List<Point> GetBrushPoints(Vector2 currentGridPosition, Vector2? previousGridPosition)
