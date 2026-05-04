@@ -14,6 +14,7 @@ internal class GridFiller
     private int currentLabel = 1;
     private int currentObstacleLabel = -1;
     public int[,] Grid { get; }
+    public int[,] WeightGrid { get; }
     public ConcurrentDictionary<int, Rectangle> PlacedRectangles { get; }
     public int Width { get; }
     public int Height { get; }
@@ -23,7 +24,16 @@ internal class GridFiller
         Width = width;
         Height = height;
         Grid = new int[height, width];
+        WeightGrid = new int[height, width];
         PlacedRectangles = [];
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                WeightGrid[y, x] = 1;
+            }
+        }
 
         foreach (Rectangle rectangle in obstacles)
         {
@@ -54,7 +64,7 @@ internal class GridFiller
         }
 
         // Collect all valid rectangle placements
-        ConcurrentBag<(int x, int y, int w, int h)> candidates = [];
+        ConcurrentBag<(int x, int y, int w, int h, int weight)> candidates = [];
 
         int cells = Grid.GetLength(0) * Grid.GetLength(1);
         int areaPlaced = 0;
@@ -74,11 +84,12 @@ internal class GridFiller
                 {
                     if (Grid[y, x] == 0)
                     {
-                        (int w, int h) = GetMaxRectangleSize(x, y, maxRectangleSize, maxRectangleSize);
+                        int tileWeight = WeightGrid[y, x];
+                        (int w, int h) = GetMaxRectangleSize(x, y, maxRectangleSize, maxRectangleSize, tileWeight);
 
                         if (w > 0 && h > 0)
                         {
-                            candidates.Add((x, y, w, h));
+                            candidates.Add((x, y, w, h, tileWeight));
                         }
 
                         if (w >= maxRectangleSize && h >= maxRectangleSize)
@@ -99,9 +110,26 @@ internal class GridFiller
             Debug.WriteLine($"Candidates: {candidates.Count}");
             Debug.WriteLine("Sorting candidates...");
 
-            // Sort by area (largest first)
-            List<(int x, int y, int w, int h)> sortedCandidates = [.. candidates];
-            sortedCandidates.Sort((a, b) => (b.w * b.h).CompareTo(a.w * a.h));
+            // Sort by area (largest first) and prefer less stretched rectangles on ties
+            List<(int x, int y, int w, int h, int weight)> sortedCandidates = [.. candidates];
+            sortedCandidates.Sort((a, b) =>
+            {
+                int areaComparison = (b.w * b.h).CompareTo(a.w * a.h);
+                if (areaComparison != 0)
+                {
+                    return areaComparison;
+                }
+
+                int stretchA = GetStretchFactor(a.w, a.h);
+                int stretchB = GetStretchFactor(b.w, b.h);
+                int stretchComparison = stretchA.CompareTo(stretchB);
+                if (stretchComparison != 0)
+                {
+                    return stretchComparison;
+                }
+
+                return b.h.CompareTo(a.h);
+            });
 
             Debug.WriteLine("Placing rectangles...");
 
@@ -109,10 +137,10 @@ internal class GridFiller
             int reportIntervalPlacing = Math.Max(sortedCandidates.Count / 10, 1);
 
             // Place rectangles, ensuring no overlap
-            foreach ((int x, int y, int w, int h) in sortedCandidates)
+            foreach ((int x, int y, int w, int h, int weight) in sortedCandidates)
             {
                 // Check if area is still free
-                if (IsAreaFree(x, y, w, h))
+                if (IsAreaFree(x, y, w, h, weight))
                 {
                     Rectangle rectangle = new Rectangle(x, y, w, h);
                     PlaceRectangle(rectangle);
@@ -162,6 +190,7 @@ internal class GridFiller
                 if (Grid[dy, dx] >= 0 && dy < rectangle.Y + rectangle.Height && dx < rectangle.X + rectangle.Width && dy >= rectangle.Y && dx >= rectangle.X)
                 {
                     Grid[dy, dx] = obstacle;
+                    WeightGrid[dy, dx] = 1;
                 }
             }
         }
@@ -206,6 +235,7 @@ internal class GridFiller
                 if (Grid[dy, dx] < 0 && dy < rectangle.Y + rectangle.Height && dx < rectangle.X + rectangle.Width && dy >= rectangle.Y && dx >= rectangle.X)
                 {
                     Grid[dy, dx] = 0;
+                    WeightGrid[dy, dx] = 1;
                 }
             }
         }
@@ -222,14 +252,91 @@ internal class GridFiller
         Debug.WriteLine($"minX: {minStartX}, minY: {minStartY}, maxX: {maxEndX}, maxY: {maxEndY}");
     }
 
+    public void SetTileWeight(int x, int y, int weight)
+    {
+        SetTileWeights([new Point(x, y)], weight);
+    }
+
+    public void ResetTileWeight(int x, int y)
+    {
+        ResetTileWeights([new Point(x, y)]);
+    }
+
+    public void SetTileWeights(IEnumerable<Point> points, int weight)
+    {
+        int clampedWeight = Math.Max(1, weight);
+        HashSet<Point> changedPoints = [];
+
+        int minX = Width;
+        int minY = Height;
+        int maxX = -1;
+        int maxY = -1;
+
+        foreach (Point point in points)
+        {
+            if (point.X < 0 || point.Y < 0 || point.X >= Width || point.Y >= Height || Grid[point.Y, point.X] < 0 || WeightGrid[point.Y, point.X] == clampedWeight)
+            {
+                continue;
+            }
+
+            _ = changedPoints.Add(point);
+            minX = Math.Min(minX, point.X);
+            minY = Math.Min(minY, point.Y);
+            maxX = Math.Max(maxX, point.X);
+            maxY = Math.Max(maxY, point.Y);
+        }
+
+        if (changedPoints.Count == 0)
+        {
+            return;
+        }
+
+        int x = int.Clamp(minX - 1, 0, Width);
+        int y = int.Clamp(minY - 1, 0, Height);
+        int w = int.Clamp(maxX + 2, 0, Width);
+        int h = int.Clamp(maxY + 2, 0, Height);
+
+        List<Rectangle> removedRectangles = [new Rectangle(x, y, w - x, h - y)];
+        HashSet<int> removedLabels = [];
+
+        for (int dy = y; dy < h; dy++)
+        {
+            for (int dx = x; dx < w; dx++)
+            {
+                int label = Grid[dy, dx];
+                if (label > 0 && removedLabels.Add(label))
+                {
+                    removedRectangles.Add(RemoveRectangle(label));
+                }
+            }
+        }
+
+        foreach (Point point in changedPoints)
+        {
+            WeightGrid[point.Y, point.X] = clampedWeight;
+        }
+
+        int minStartX = removedRectangles.Min(r => r.X);
+        int minStartY = removedRectangles.Min(r => r.Y);
+        int maxEndX = removedRectangles.Max(r => r.X + r.Width);
+        int maxEndY = removedRectangles.Max(r => r.Y + r.Height);
+
+        FillGrid(minStartX, minStartY, maxEndX, maxEndY);
+    }
+
+    public void ResetTileWeights(IEnumerable<Point> points)
+    {
+        SetTileWeights(points, 1);
+    }
+
     // Helper method to check if a rectangle can still be placed
-    private bool IsAreaFree(int x, int y, int w, int h)
+    private bool IsAreaFree(int x, int y, int w, int h, int requiredWeight)
     {
         for (int dy = 0; dy < h; dy++)
         {
             for (int dx = 0; dx < w; dx++)
             {
-                if (Grid[y + dy, x + dx] != 0) // Not empty
+                if (Grid[y + dy, x + dx] != 0 || WeightGrid[y + dy, x + dx] != requiredWeight) // Not empty or mismatched weight
                 {
                     return false;
                 }
@@ -238,28 +345,54 @@ internal class GridFiller
         return true;
     }
 
-    private (int, int) GetMaxRectangleSize(int startX, int startY, int limitW, int limitH)
+    private (int, int) GetMaxRectangleSize(int startX, int startY, int limitW, int limitH, int requiredWeight)
     {
-        int maxWidth = 0, maxHeight = 0;
-
-        for (int x = startX; x < Width && maxWidth < limitW && Grid[startY, x] == 0; x++)
+        int maxHeight = Math.Min(Height - startY, limitH);
+        if (maxHeight <= 0)
         {
-            maxWidth++;
+            return (0, 0);
         }
 
-        for (int h = 1; h <= Math.Min(Height - startY, limitH); h++)
+        int initialWidth = GetRowContinuousWidth(startX, startY, limitW, requiredWeight);
+        if (initialWidth <= 0)
         {
-            for (int x = startX; x < startX + maxWidth; x++)
+            return (0, 0);
+        }
+
+        int currentWidth = initialWidth;
+        int bestWidth = 0;
+        int bestHeight = 0;
+        int bestArea = 0;
+        int bestStretch = int.MaxValue;
+
+        for (int h = 1; h <= maxHeight; h++)
+        {
+            int row = startY + h - 1;
+            int rowWidth = GetRowContinuousWidth(startX, row, currentWidth, requiredWeight);
+            currentWidth = Math.Min(currentWidth, rowWidth);
+
+            if (currentWidth <= 0)
             {
-                if (Grid[startY + h - 1, x] != 0)
-                {
-                    return (maxWidth, h - 1);
-                }
+                break;
             }
-            maxHeight = h;
+
+            int area = currentWidth * h;
+            int stretch = GetStretchFactor(currentWidth, h);
+
+            bool isBetterArea = area > bestArea;
+            bool isEqualAreaButBetterShape = area == bestArea && stretch < bestStretch;
+            bool isNearBestAreaMuchBetterShape = bestArea > 0 && area * 10 >= bestArea * 9 && stretch + 2 < bestStretch;
+
+            if (isBetterArea || isEqualAreaButBetterShape || isNearBestAreaMuchBetterShape)
+            {
+                bestArea = area;
+                bestWidth = currentWidth;
+                bestHeight = h;
+                bestStretch = stretch;
+            }
         }
 
-        return (maxWidth, maxHeight);
+        return (bestWidth, bestHeight);
     }
 
     private void PlaceRectangle(Rectangle rectangle)
@@ -294,4 +427,35 @@ internal class GridFiller
 
         return rectangle;
     }
+
+    private int GetRowContinuousWidth(int startX, int y, int maxWidth, int requiredWeight)
+    {
+        int width = 0;
+        int maxX = Math.Min(Width, startX + maxWidth);
+
+        for (int x = startX; x < maxX; x++)
+        {
+            if (Grid[y, x] != 0 || WeightGrid[y, x] != requiredWeight)
+            {
+                break;
+            }
+
+            width++;
+        }
+
+        return width;
+    }
+
+    private static int GetStretchFactor(int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return int.MaxValue;
+        }
+
+        int minSide = Math.Min(width, height);
+        int maxSide = Math.Max(width, height);
+        return maxSide / minSide;
+    }
+
 }

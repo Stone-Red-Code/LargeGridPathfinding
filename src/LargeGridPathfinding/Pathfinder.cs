@@ -11,23 +11,40 @@ namespace LargeGridPathfinding;
 internal class Pathfinder
 {
     private readonly ConcurrentDictionary<int, Rectangle> rectanglesSource;
+    private readonly int[,] grid;
+    private readonly int[,] weightGrid;
     private readonly bool pathRandomization;
     private readonly bool penalizeStretchedRectangles;
     private Dictionary<int, Rectangle> rectangleMap;
     private Dictionary<int, List<int>> adjacencyList;
 
-    public Pathfinder(ConcurrentDictionary<int, Rectangle> rectangles, bool pathRandomization = false, bool penalizeStretchedRectangles = false)
+    public Pathfinder(ConcurrentDictionary<int, Rectangle> rectangles, int[,] grid, int[,] weightGrid, bool pathRandomization = false, bool penalizeStretchedRectangles = false)
     {
         rectanglesSource = rectangles;
+        this.grid = grid;
+        this.weightGrid = weightGrid;
         this.pathRandomization = pathRandomization;
         this.penalizeStretchedRectangles = penalizeStretchedRectangles;
         rectangleMap = new Dictionary<int, Rectangle>(rectangles);
         adjacencyList = BuildGraph();
     }
 
-    public List<Vector2>? FindPath(ref int start, ref int goal)
+    public List<Vector2>? FindPath(Point startPoint, Point goalPoint)
     {
-        PriorityQueue<(int node, List<int> path, int cost), int> queue = new PriorityQueue<(int node, List<int> path, int cost), int>();
+        if (!IsInBounds(startPoint.X, startPoint.Y) || !IsInBounds(goalPoint.X, goalPoint.Y))
+        {
+            return null;
+        }
+
+        int start = grid[startPoint.Y, startPoint.X];
+        int goal = grid[goalPoint.Y, goalPoint.X];
+
+        if (start <= 0 || goal <= 0)
+        {
+            return null;
+        }
+
+        PriorityQueue<(int node, List<int> path, int cost), int> queue = new();
         HashSet<int> visited = [];
         queue.Enqueue((start, new List<int> { start }, 0), 0);
 
@@ -43,17 +60,7 @@ internal class Pathfinder
 
             if (node == goal)
             {
-                // Convert rectangle path to coordinate transitions
-                List<Vector2> coordinatePath = [];
-
-                for (int i = 0; i < path.Count - 1; i++)
-                {
-                    (Vector2 entry, Vector2 exit) = GetTransitionPoints(path[i], path[i + 1], i + 2 < path.Count ? path[i + 2] : null);
-                    coordinatePath.Add(entry);
-                    coordinatePath.Add(exit);
-                }
-
-                return coordinatePath;
+                return BuildCoordinatePath(path, startPoint, goalPoint);
             }
 
             if (visited.Contains(node))
@@ -69,19 +76,22 @@ internal class Pathfinder
                 {
                     List<int> newPath = new List<int>(path) { neighbor };
 
-                    int newCost = cost + 1;
+                    int newCost = cost + GetRectangleWeight(neighbor);
 
                     if (penalizeStretchedRectangles)
                     {
-                        newCost += Math.Max(rectangleMap[neighbor].Width, rectangleMap[neighbor].Height) / Math.Min(rectangleMap[neighbor].Width, rectangleMap[neighbor].Height);
+                        Rectangle rectangle = rectangleMap[neighbor];
+                        newCost += Math.Max(rectangle.Width, rectangle.Height) / Math.Min(rectangle.Width, rectangle.Height);
                     }
+
+                    int priority = newCost + GetHeuristicCost(neighbor, goal);
 
                     if (pathRandomization)
                     {
-                        newCost += Random.Shared.Next(-1, 2);
+                        priority += Random.Shared.Next(-1, 2);
                     }
 
-                    queue.Enqueue((neighbor, newPath, newCost), newCost);
+                    queue.Enqueue((neighbor, newPath, newCost), priority);
                 }
             }
         }
@@ -94,6 +104,62 @@ internal class Pathfinder
         rectangleMap = new Dictionary<int, Rectangle>(rectanglesSource);
         adjacencyList.Clear();
         adjacencyList = BuildGraph();
+    }
+
+    private bool IsInBounds(int x, int y) => x >= 0 && y >= 0 && y < grid.GetLength(0) && x < grid.GetLength(1);
+
+    private int GetRectangleWeight(int rectangleLabel)
+    {
+        Rectangle rectangle = rectangleMap[rectangleLabel];
+        return Math.Max(1, weightGrid[rectangle.Y, rectangle.X]);
+    }
+
+    private int GetHeuristicCost(int from, int to)
+    {
+        Rectangle r1 = rectangleMap[from];
+        Rectangle r2 = rectangleMap[to];
+        Point c1 = r1.Center;
+        Point c2 = r2.Center;
+        return Math.Abs(c1.X - c2.X) + Math.Abs(c1.Y - c2.Y);
+    }
+
+    private List<Vector2>? BuildCoordinatePath(IReadOnlyList<int> path, Point startPoint, Point goalPoint)
+    {
+        if (path.Count == 0)
+        {
+            return null;
+        }
+
+        if (path.Count == 1)
+        {
+            return [startPoint.ToVector2(), goalPoint.ToVector2()];
+        }
+
+        List<Vector2> coordinatePath = [startPoint.ToVector2()];
+
+        for (int i = 0; i < path.Count - 1; i++)
+        {
+            (Vector2 entry, Vector2 exit) = GetTransitionPoints(path[i], path[i + 1], i + 2 < path.Count ? path[i + 2] : null);
+
+            if (entry.X < 0 || exit.X < 0)
+            {
+                return null;
+            }
+
+            if (coordinatePath[^1] != entry)
+            {
+                coordinatePath.Add(entry);
+            }
+            coordinatePath.Add(exit);
+        }
+
+        Vector2 goalVector = goalPoint.ToVector2();
+        if (coordinatePath[^1] != goalVector)
+        {
+            coordinatePath.Add(goalVector);
+        }
+
+        return coordinatePath;
     }
 
     private static bool AreRectanglesAdjacent(Rectangle r1, Rectangle r2)
@@ -112,11 +178,9 @@ internal class Pathfinder
             return new Vector2(randomX, randomY);
         }
 
-        // Clamp the point to the closest edge of the rectangle
         float closestX = Math.Clamp(point.X, rect.Left, rect.Right - 1);
         float closestY = Math.Clamp(point.Y, rect.Top, rect.Bottom - 1);
 
-        // If point is inside the rectangle, push it to the nearest edge
         if (point.X >= rect.Left && point.X < rect.Right &&
             point.Y >= rect.Top && point.Y < rect.Bottom)
         {
@@ -148,7 +212,6 @@ internal class Pathfinder
         return new Vector2(closestX, closestY);
     }
 
-    // Build a graph where each rectangle is a node and each edge represents an adjacency
     private Dictionary<int, List<int>> BuildGraph()
     {
         Dictionary<int, List<int>> graph = [];
@@ -172,13 +235,10 @@ internal class Pathfinder
         return graph;
     }
 
-    // Find the transition points between two rectangles
     private (Vector2 entry, Vector2 exit) GetTransitionPoints(int from, int to, int? next = null)
     {
         Rectangle r1 = rectangleMap[from];
         Rectangle r2 = rectangleMap[to];
-
-        // Find all possible valid transition points
         List<(Vector2 entry, Vector2 exit)> possibleTransitions = [];
 
         if (r1.Right == r2.Left)
@@ -215,7 +275,6 @@ internal class Pathfinder
             return (new Vector2(-1, -1), new Vector2(-1, -1));
         }
 
-        // If there's a next rectangle, optimize the transition to minimize the distance
         if (next is not null && rectangleMap.TryGetValue(next.Value, out Rectangle r3))
         {
             (Vector2 entry, Vector2 exit) bestTransition = possibleTransitions
@@ -225,7 +284,6 @@ internal class Pathfinder
             return bestTransition;
         }
 
-        // Default: Pick the middle transition point
         return possibleTransitions[possibleTransitions.Count / 2];
     }
 }

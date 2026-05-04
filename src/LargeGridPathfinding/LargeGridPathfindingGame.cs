@@ -17,6 +17,12 @@ namespace LargeGridPathfinding;
 
 public class LargeGridPathfindingGame : Game
 {
+    private enum BrushMode
+    {
+        Weight,
+        Obstacle
+    }
+
     private readonly ConcurrentDictionary<Vector2, Color> temporaryIndicators = [];
     private readonly ProgressTracker progressTracker = new ProgressTracker();
     private readonly List<Agent> agents = [];
@@ -31,6 +37,8 @@ public class LargeGridPathfindingGame : Game
     private bool showZones = true;
     private bool showGrid = false;
     private bool showPaths = false;
+    private BrushMode brushMode = BrushMode.Weight;
+    private int paintWeight = 5;
     private Vector2? previousMousePosition;
 
     public LargeGridPathfindingGame()
@@ -164,6 +172,48 @@ public class LargeGridPathfindingGame : Game
             showPaths = !showPaths;
         }
 
+        if (keyboardState.WasKeyPressed(Keys.D1) || keyboardState.WasKeyPressed(Keys.NumPad1))
+        {
+            paintWeight = 1;
+        }
+        else if (keyboardState.WasKeyPressed(Keys.D2) || keyboardState.WasKeyPressed(Keys.NumPad2))
+        {
+            paintWeight = 2;
+        }
+        else if (keyboardState.WasKeyPressed(Keys.D3) || keyboardState.WasKeyPressed(Keys.NumPad3))
+        {
+            paintWeight = 3;
+        }
+        else if (keyboardState.WasKeyPressed(Keys.D4) || keyboardState.WasKeyPressed(Keys.NumPad4))
+        {
+            paintWeight = 4;
+        }
+        else if (keyboardState.WasKeyPressed(Keys.D5) || keyboardState.WasKeyPressed(Keys.NumPad5))
+        {
+            paintWeight = 5;
+        }
+        else if (keyboardState.WasKeyPressed(Keys.D6) || keyboardState.WasKeyPressed(Keys.NumPad6))
+        {
+            paintWeight = 6;
+        }
+        else if (keyboardState.WasKeyPressed(Keys.D7) || keyboardState.WasKeyPressed(Keys.NumPad7))
+        {
+            paintWeight = 7;
+        }
+        else if (keyboardState.WasKeyPressed(Keys.D8) || keyboardState.WasKeyPressed(Keys.NumPad8))
+        {
+            paintWeight = 8;
+        }
+        else if (keyboardState.WasKeyPressed(Keys.D9) || keyboardState.WasKeyPressed(Keys.NumPad9))
+        {
+            paintWeight = 9;
+        }
+
+        if (keyboardState.WasKeyPressed(Keys.O))
+        {
+            brushMode = brushMode == BrushMode.Weight ? BrushMode.Obstacle : BrushMode.Weight;
+        }
+
         if (keyboardState.WasKeyPressed(Keys.F))
         {
             Debug.WriteLine("Filling grid...");
@@ -191,14 +241,20 @@ public class LargeGridPathfindingGame : Game
             });
         }
 
-        // Place or remove obstacles via mouse input
+        // Paint and clear tiles via mouse input
 
         if (mouseState.IsButtonDown(MouseButton.Left))
         {
             Vector2 mousePosition = camera.ScreenToWorld(mouseState.Position.ToVector2());
             Vector2 gridPosition = new Vector2((int)mousePosition.X / 10, (int)mousePosition.Y / 10);
 
-            if (gridPosition.X < 0 || gridPosition.X >= gridFiller.Width || gridPosition.Y < 0 || gridPosition.Y >= gridFiller.Height || gridFiller.Grid[(int)gridPosition.Y, (int)gridPosition.X] < 0 || temporaryIndicators.ContainsKey(gridPosition))
+            if (gridPosition.X < 0 || gridPosition.X >= gridFiller.Width || gridPosition.Y < 0 || gridPosition.Y >= gridFiller.Height || temporaryIndicators.ContainsKey(gridPosition))
+            {
+                return;
+            }
+
+            int cellValue = gridFiller.Grid[(int)gridPosition.Y, (int)gridPosition.X];
+            if ((brushMode == BrushMode.Weight && cellValue < 0) || (brushMode == BrushMode.Obstacle && cellValue < 0))
             {
                 return;
             }
@@ -209,37 +265,41 @@ public class LargeGridPathfindingGame : Game
                 previousGridPosition = new Vector2((int)previousMousePosition.Value.X / 10, (int)previousMousePosition.Value.Y / 10);
             }
 
-            // Place temporary indicators to show the obstacle is scheduled for placement
-            temporaryIndicators[gridPosition] = Color.Red;
+            Color indicatorColor = brushMode == BrushMode.Weight ? Color.Orange : Color.Red;
+            BrushMode currentBrushMode = brushMode;
+            int currentPaintWeight = paintWeight;
+            temporaryIndicators[gridPosition] = indicatorColor;
 
             previousMousePosition = mousePosition;
 
             _ = Task.Run(() =>
             {
-                if (previousGridPosition is not null)
+                List<Point> brushPoints = GetBrushPoints(gridPosition, previousGridPosition);
+                foreach (Point point in brushPoints)
                 {
-                    List<Vector2> interpolatedPositions = [];
+                    temporaryIndicators[point.ToVector2()] = indicatorColor;
+                }
 
-                    // Interpolate between previous and current mouse position to place obstacles in a straight line to prevent gaps
-                    float distance = Vector2.Distance(previousGridPosition.Value, gridPosition);
-                    float lerpSteps = distance * 10;
-
-                    for (float t = 0; t <= 1; t += 1 / lerpSteps)
+                if (currentBrushMode == BrushMode.Weight)
+                {
+                    gridFiller.SetTileWeights(brushPoints, currentPaintWeight);
+                }
+                else
+                {
+                    foreach (Point point in brushPoints)
                     {
-                        Vector2 interpolatedPosition = Vector2.Lerp(previousGridPosition.Value, gridPosition, t);
-                        interpolatedPosition.Round();
-                        interpolatedPositions.Add(interpolatedPosition);
-                        temporaryIndicators[interpolatedPosition] = Color.Red;
-                    }
-
-                    foreach (Vector2 interpolatedPosition in interpolatedPositions.Distinct())
-                    {
-                        gridFiller.PlaceObstacle(new Rectangle((int)interpolatedPosition.X, (int)interpolatedPosition.Y, 1, 1));
-                        _ = temporaryIndicators.TryRemove(interpolatedPosition, out _);
+                        if (point.X >= 0 && point.Y >= 0 && point.X < gridFiller.Width && point.Y < gridFiller.Height && gridFiller.Grid[point.Y, point.X] >= 0)
+                        {
+                            gridFiller.PlaceObstacle(new Rectangle(point.X, point.Y, 1, 1));
+                        }
                     }
                 }
 
-                gridFiller.PlaceObstacle(new Rectangle((int)gridPosition.X, (int)gridPosition.Y, 1, 1));
+                foreach (Point point in brushPoints)
+                {
+                    _ = temporaryIndicators.TryRemove(point.ToVector2(), out _);
+                }
+
                 gridChanged = true;
                 _ = temporaryIndicators.TryRemove(gridPosition, out _);
             });
@@ -249,7 +309,13 @@ public class LargeGridPathfindingGame : Game
             Vector2 mousePosition = camera.ScreenToWorld(mouseState.Position.ToVector2());
             Vector2 gridPosition = new Vector2((int)mousePosition.X / 10, (int)mousePosition.Y / 10);
 
-            if (gridPosition.X < 0 || gridPosition.X >= gridFiller.Width || gridPosition.Y < 0 || gridPosition.Y >= gridFiller.Height || gridFiller.Grid[(int)gridPosition.Y, (int)gridPosition.X] > 0 || temporaryIndicators.ContainsKey(gridPosition))
+            if (gridPosition.X < 0 || gridPosition.X >= gridFiller.Width || gridPosition.Y < 0 || gridPosition.Y >= gridFiller.Height || temporaryIndicators.ContainsKey(gridPosition))
+            {
+                return;
+            }
+
+            int cellValue = gridFiller.Grid[(int)gridPosition.Y, (int)gridPosition.X];
+            if ((brushMode == BrushMode.Weight && cellValue < 0) || (brushMode == BrushMode.Obstacle && cellValue >= 0))
             {
                 return;
             }
@@ -260,38 +326,40 @@ public class LargeGridPathfindingGame : Game
                 previousGridPosition = new Vector2((int)previousMousePosition.Value.X / 10, (int)previousMousePosition.Value.Y / 10);
             }
 
-            // Place temporary indicators to show the obstacle is scheduled for removal
-            temporaryIndicators[gridPosition] = Color.Yellow;
+            Color indicatorColor = brushMode == BrushMode.Weight ? Color.LightGray : Color.Yellow;
+            BrushMode currentBrushMode = brushMode;
+            temporaryIndicators[gridPosition] = indicatorColor;
 
             previousMousePosition = mousePosition;
 
             _ = Task.Run(() =>
             {
-                if (previousGridPosition is not null)
+                List<Point> brushPoints = GetBrushPoints(gridPosition, previousGridPosition);
+                foreach (Point point in brushPoints)
                 {
-                    List<Vector2> interpolatedPositions = [];
+                    temporaryIndicators[point.ToVector2()] = indicatorColor;
+                }
 
-                    // Interpolate between previous and current mouse position to place obstacles in a straight line to prevent gaps
-
-                    float distance = Vector2.Distance(previousGridPosition.Value, gridPosition);
-                    float lerpSteps = distance * 10;
-
-                    for (float t = 0; t <= 1; t += 1 / lerpSteps)
+                if (currentBrushMode == BrushMode.Weight)
+                {
+                    gridFiller.ResetTileWeights(brushPoints);
+                }
+                else
+                {
+                    foreach (Point point in brushPoints)
                     {
-                        Vector2 interpolatedPosition = Vector2.Lerp(previousGridPosition.Value, gridPosition, t);
-                        interpolatedPosition.Round();
-                        interpolatedPositions.Add(interpolatedPosition);
-                        temporaryIndicators[interpolatedPosition] = Color.Yellow;
-                    }
-
-                    foreach (Vector2 interpolatedPosition in interpolatedPositions.Distinct())
-                    {
-                        gridFiller.RemoveObstacle(new Rectangle((int)interpolatedPosition.X, (int)interpolatedPosition.Y, 1, 1));
-                        _ = temporaryIndicators.TryRemove(interpolatedPosition, out _);
+                        if (point.X >= 0 && point.Y >= 0 && point.X < gridFiller.Width && point.Y < gridFiller.Height && gridFiller.Grid[point.Y, point.X] < 0)
+                        {
+                            gridFiller.RemoveObstacle(new Rectangle(point.X, point.Y, 1, 1));
+                        }
                     }
                 }
 
-                gridFiller.RemoveObstacle(new Rectangle((int)gridPosition.X, (int)gridPosition.Y, 1, 1));
+                foreach (Point point in brushPoints)
+                {
+                    _ = temporaryIndicators.TryRemove(point.ToVector2(), out _);
+                }
+
                 gridChanged = true;
                 _ = temporaryIndicators.TryRemove(gridPosition, out _);
             });
@@ -358,6 +426,14 @@ public class LargeGridPathfindingGame : Game
                 cellRect.Y = y * 10;
 
                 int cellValue = grid[y, x];
+                int cellWeight = gridFiller.WeightGrid[y, x];
+
+                if (cellWeight > 1 && cellValue >= 0)
+                {
+                    float blendFactor = Math.Clamp((cellWeight - 1) / 8f, 0f, 1f);
+                    Color weightColor = Color.Lerp(Color.LightYellow, Color.DarkOrange, blendFactor);
+                    spriteBatch.FillRectangle(cellRect, weightColor * 0.75f, layerDepth: 0.25f);
+                }
 
                 if (cellValue < 0)
                 {
@@ -431,6 +507,8 @@ public class LargeGridPathfindingGame : Game
         uiSpriteBatch.DrawString(uiFont, $"Grid: {gridFiller.Width}x{gridFiller.Height}", new Vector2(10, 30), Color.Black);
         uiSpriteBatch.DrawString(uiFont, $"Zones: {gridFiller.PlacedRectangles.Count}", new Vector2(10, 50), Color.Black);
         uiSpriteBatch.DrawString(uiFont, $"Agents: {agents.Count}", new Vector2(10, 70), Color.Black);
+        uiSpriteBatch.DrawString(uiFont, $"Brush mode: {brushMode} [O]", new Vector2(10, 90), Color.Black);
+        uiSpriteBatch.DrawString(uiFont, $"Weight: {paintWeight} [Keys 1-9, Weight mode]", new Vector2(10, 110), Color.Black);
 
         IReadOnlyList<ProgressTracker.ProgressData> progresses = progressTracker.GetProgresses();
 
@@ -440,7 +518,7 @@ public class LargeGridPathfindingGame : Game
 
             string progress = progressData.Indeterminate ? "..." : progressData.Progress.ToString("P0");
 
-            uiSpriteBatch.DrawString(uiFont, $"{progressData.Name}: {progress}", new Vector2(10, 90 + (i * 20)), Color.Black);
+            uiSpriteBatch.DrawString(uiFont, $"{progressData.Name}: {progress}", new Vector2(10, 130 + (i * 20)), Color.Black);
         }
 
         uiSpriteBatch.End();
@@ -455,7 +533,7 @@ public class LargeGridPathfindingGame : Game
             // Configuration options
             int width = 1000;
             int height = 1000;
-            int agentCount = 10000;
+            int agentCount = 1000;
 
             bool pathRandomization = false; // Randomize path costs to prevent agents from following the same path
             bool penalizeStretchedRectangles = false; // (EXPERIMENTAL) Penalize paths that go through stretched rectangles to prevent too many agents in a small area
@@ -556,7 +634,7 @@ public class LargeGridPathfindingGame : Game
 
             gridFiller.FillGrid(totalProgress: fillingGridProgressReporter, calculatingCandidatesProgress: calculatingCandidatesProgressReporter, placingCandidatesProgress: placingCandidatesProgressReporter);
 
-            pathfinder = new Pathfinder(gridFiller.PlacedRectangles, pathRandomization, penalizeStretchedRectangles);
+            pathfinder = new Pathfinder(gridFiller.PlacedRectangles, gridFiller.Grid, gridFiller.WeightGrid, pathRandomization, penalizeStretchedRectangles);
             gridChanged = true;
             inputBlocked = false;
             showZones = false;
@@ -636,17 +714,31 @@ public class LargeGridPathfindingGame : Game
         start ??= new Point(startX, startY);
         goal ??= new Point(goalX, goalY);
 
-        int[,] grid = gridFiller.Grid;
+        return pathfinder.FindPath(start.Value, goal.Value);
+    }
 
-        List<Vector2>? path = pathfinder.FindPath(ref grid[start.Value.Y, start.Value.X], ref grid[goal.Value.Y, goal.Value.X]);
+    private static List<Point> GetBrushPoints(Vector2 currentGridPosition, Vector2? previousGridPosition)
+    {
+        HashSet<Point> points = [];
+        Point currentPoint = new Point((int)currentGridPosition.X, (int)currentGridPosition.Y);
+        _ = points.Add(currentPoint);
 
-        if (path is not null)
+        if (previousGridPosition is null)
         {
-            // Add start and goal positions to the path because the pathfinder only returns transitions between rectangles
-            path.Insert(0, start.Value.ToVector2());
-            path.Add(goal.Value.ToVector2());
+            return [.. points];
         }
 
-        return path;
+        float distance = Vector2.Distance(previousGridPosition.Value, currentGridPosition);
+        int steps = Math.Max(1, (int)Math.Ceiling(distance * 10));
+
+        for (int i = 0; i <= steps; i++)
+        {
+            float t = i / (float)steps;
+            Vector2 interpolatedPosition = Vector2.Lerp(previousGridPosition.Value, currentGridPosition, t);
+            Point interpolatedPoint = new Point((int)Math.Round(interpolatedPosition.X), (int)Math.Round(interpolatedPosition.Y));
+            _ = points.Add(interpolatedPoint);
+        }
+
+        return [.. points];
     }
 }
