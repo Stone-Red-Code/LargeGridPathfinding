@@ -231,8 +231,8 @@ public class GridFiller
             if (changed)
             {
                 // Capture zones and rectangles before recalculation
-                HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
-                var rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
+                HashSet<int> zonesBefore = [.. PlacedRectangles.Keys];
+                Dictionary<int, Rectangle> rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
 
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
@@ -256,23 +256,23 @@ public class GridFiller
                 });
 
                 // Capture zones after recalculation
-                HashSet<int> zonesAfter = new(PlacedRectangles.Keys);
+                HashSet<int> zonesAfter = [.. PlacedRectangles.Keys];
 
                 Debug.WriteLine("Placed obstacle");
 
                 // Return zones that changed (added, removed, or had their rectangle modified)
-                HashSet<int> affected = new(zonesBefore);
+                HashSet<int> affected = [.. zonesBefore];
                 affected.SymmetricExceptWith(zonesAfter);  // zones removed OR added
-                
+
                 // Also include zones whose rectangles changed
-                foreach (int zoneId in zonesBefore.Where(z => zonesAfter.Contains(z)))
+                foreach (int zoneId in zonesBefore.Where(zonesAfter.Contains))
                 {
                     if (PlacedRectangles[zoneId] != rectBefore[zoneId])
                     {
-                        affected.Add(zoneId);
+                        _ = affected.Add(zoneId);
                     }
                 }
-                
+
                 return affected;
             }
 
@@ -332,8 +332,8 @@ public class GridFiller
             if (changed)
             {
                 // Capture zones and rectangles before recalculation
-                HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
-                var rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
+                HashSet<int> zonesBefore = [.. PlacedRectangles.Keys];
+                Dictionary<int, Rectangle> rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
 
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
@@ -355,22 +355,22 @@ public class GridFiller
                 });
 
                 // Capture zones after recalculation
-                HashSet<int> zonesAfter = new(PlacedRectangles.Keys);
+                HashSet<int> zonesAfter = [.. PlacedRectangles.Keys];
 
                 Debug.WriteLine("Removed obstacle");
 
                 // Return zones that changed (added, removed, or had their rectangle modified)
-                HashSet<int> affected = new(zonesBefore);
+                HashSet<int> affected = [.. zonesBefore];
                 affected.SymmetricExceptWith(zonesAfter);
-                
-                foreach (int zoneId in zonesBefore.Where(z => zonesAfter.Contains(z)))
+
+                foreach (int zoneId in zonesBefore.Where(zonesAfter.Contains))
                 {
                     if (PlacedRectangles[zoneId] != rectBefore[zoneId])
                     {
-                        affected.Add(zoneId);
+                        _ = affected.Add(zoneId);
                     }
                 }
-                
+
                 return affected;
             }
 
@@ -421,8 +421,8 @@ public class GridFiller
             if (changed)
             {
                 // Capture zones and rectangles before recalculation
-                HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
-                var rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
+                HashSet<int> zonesBefore = [.. PlacedRectangles.Keys];
+                Dictionary<int, Rectangle> rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
 
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
@@ -438,20 +438,20 @@ public class GridFiller
                 });
 
                 // Capture zones after recalculation
-                HashSet<int> zonesAfter = new(PlacedRectangles.Keys);
+                HashSet<int> zonesAfter = [.. PlacedRectangles.Keys];
 
                 // Return zones that changed (added, removed, or had their rectangle modified)
-                HashSet<int> affected = new(zonesBefore);
+                HashSet<int> affected = [.. zonesBefore];
                 affected.SymmetricExceptWith(zonesAfter);
-                
-                foreach (int zoneId in zonesBefore.Where(z => zonesAfter.Contains(z)))
+
+                foreach (int zoneId in zonesBefore.Where(zonesAfter.Contains))
                 {
                     if (PlacedRectangles[zoneId] != rectBefore[zoneId])
                     {
-                        affected.Add(zoneId);
+                        _ = affected.Add(zoneId);
                     }
                 }
-                
+
                 return affected;
             }
 
