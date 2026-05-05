@@ -75,9 +75,12 @@ public class GridFiller
 
                 Debug.WriteLine("Calculating candidates...");
 
-                _ = Parallel.For(y1.Value, y2.Value, (y, loopState) =>
+                ParallelOptions parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+
+                _ = Parallel.For(y1.Value, y2.Value, parallelOptions, (y, loopState) =>
                 {
-                    for (int x = x1.Value; x < x2; x++)
+                    int x = x1.Value;
+                    while (x < x2)
                     {
                         if (Grid[y, x] == 0)
                         {
@@ -87,6 +90,11 @@ public class GridFiller
                             if (w > 0 && h > 0)
                             {
                                 candidates.Add((x, y, w, h, tileWeight));
+                                x += w;
+                            }
+                            else
+                            {
+                                x++;
                             }
 
                             if (w >= maxRectangleSize && h >= maxRectangleSize)
@@ -101,14 +109,24 @@ public class GridFiller
                                 Debug.WriteLine($"Candidates Progress: {candidates.Count} / {cells - areaPlaced} ({(float)candidates.Count / (cells - areaPlaced):P2})");
                             }
                         }
+                        else
+                        {
+                            x++;
+                        }
                     }
                 });
 
                 Debug.WriteLine($"Candidates: {candidates.Count}");
+
+                if (candidates.Count == 0)
+                {
+                    break;
+                }
+
                 Debug.WriteLine("Sorting candidates...");
 
-                var sortedCandidates = new List<(int x, int y, int w, int h, int weight)>(candidates.Count);
-                sortedCandidates.AddRange(candidates);
+                List<(int x, int y, int w, int h, int weight)> sortedCandidates = [.. candidates];
+
                 sortedCandidates.Sort((a, b) =>
                 {
                     int areaComparison = (b.w * b.h).CompareTo(a.w * a.h);
@@ -397,6 +415,8 @@ public class GridFiller
         int bestHeight = 0;
         int bestArea = 0;
         int bestStretch = int.MaxValue;
+        int noImprovementCount = 0;
+        const int maxNoImprovement = 5;
 
         for (int h = 1; h <= maxHeight; h++)
         {
@@ -422,10 +442,15 @@ public class GridFiller
                 bestWidth = currentWidth;
                 bestHeight = h;
                 bestStretch = stretch;
+                noImprovementCount = 0;
             }
-            else if (area < bestArea && h > bestHeight * 2)
+            else
             {
-                break;
+                noImprovementCount++;
+                if (noImprovementCount >= maxNoImprovement)
+                {
+                    //break;
+                }
             }
         }
 
@@ -565,5 +590,21 @@ public class GridFiller
         int minSide = Math.Min(width, height);
         int maxSide = Math.Max(width, height);
         return maxSide / minSide;
+    }
+
+    // Public methods for benchmarking
+    public int GetRowContinuousWidthPublic(int startX, int y, int maxWidth, int requiredWeight)
+    {
+        return GetRowContinuousWidth(startX, y, maxWidth, requiredWeight);
+    }
+
+    public bool IsAreaFreePublic(int x, int y, int w, int h, int requiredWeight)
+    {
+        return IsAreaFree(x, y, w, h, requiredWeight);
+    }
+
+    public int GetStretchFactorPublic(int width, int height)
+    {
+        return GetStretchFactor(width, height);
     }
 }
