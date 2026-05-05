@@ -518,9 +518,16 @@ public class LargeGridPathfindingGame : Game
         if (showPaths)
         {
             spriteBatch.Begin(SpriteSortMode.Deferred, samplerState: SamplerState.PointClamp, transformMatrix: transformMatrix);
+
+            // Cache bounds once — avoids repeated property access inside the loops
+            float viewLeft = camera.BoundingRectangle.Left - 10;
+            float viewRight = camera.BoundingRectangle.Right + 10;
+            float viewTop = camera.BoundingRectangle.Top - 10;
+            float viewBottom = camera.BoundingRectangle.Bottom + 10;
+
             foreach (List<Vector2>? path in agents.Select(a => a.Path))
             {
-                if (path is null)
+                if (path is null || path.Count < 2)
                 {
                     continue;
                 }
@@ -530,19 +537,36 @@ public class LargeGridPathfindingGame : Game
                     Vector2 start = (path[i] * 10) + new Vector2(5, 5);
                     Vector2 end = (path[i + 1] * 10) + new Vector2(5, 5);
 
-                    if ((start.X < camera.BoundingRectangle.Left - 10 && end.X < camera.BoundingRectangle.Left - 10) ||
-                        (start.X > camera.BoundingRectangle.Right + 10 && end.X > camera.BoundingRectangle.Right + 10) ||
-                        (start.Y < camera.BoundingRectangle.Top - 10 && end.Y < camera.BoundingRectangle.Top - 10) ||
-                        (start.Y > camera.BoundingRectangle.Bottom + 10 && end.Y > camera.BoundingRectangle.Bottom + 10))
+                    bool startInView = start.X >= viewLeft && start.X <= viewRight
+                                    && start.Y >= viewTop && start.Y <= viewBottom;
+                    bool endInView = end.X >= viewLeft && end.X <= viewRight
+                                    && end.Y >= viewTop && end.Y <= viewBottom;
+
+                    // Skip segment only when both endpoints are outside the same edge
+                    bool segmentVisible = !((start.X < viewLeft && end.X < viewLeft) ||
+                                            (start.X > viewRight && end.X > viewRight) ||
+                                            (start.Y < viewTop && end.Y < viewTop) ||
+                                            (start.Y > viewBottom && end.Y > viewBottom));
+
+                    if (segmentVisible)
                     {
-                        continue;
+                        spriteBatch.DrawLine(start, end, Color.Gray, 2f, layerDepth: 0.1f);
                     }
 
-                    spriteBatch.DrawLine(start, end, Color.Black, 2f, layerDepth: 0.1f);
-                    spriteBatch.DrawCircle(start, 5, 10, i == 0 ? Color.Green : Color.Black, 2f, layerDepth: 0.1f);
-                    spriteBatch.DrawCircle(end, 5, 10, i == path.Count - 2 ? Color.Red : Color.Black, 2f, layerDepth: 0.1f);
+                    // Draw each node exactly once: as the *start* of its segment.
+                    // The final node has no next segment, so draw it as the loop's last end.
+                    if (startInView)
+                    {
+                        spriteBatch.DrawCircle(start, 5, 10, i == 0 ? Color.Green : Color.Gray, 2f, layerDepth: 0.1f);
+                    }
+
+                    if (i == path.Count - 2 && endInView)
+                    {
+                        spriteBatch.DrawCircle(end, 5, 10, Color.Red, 2f, layerDepth: 0.1f);
+                    }
                 }
             }
+
             spriteBatch.End();
         }
 
@@ -595,7 +619,7 @@ public class LargeGridPathfindingGame : Game
             // Configuration options
             int width = 1000;
             int height = 1000;
-            int agentCount = 1000;
+            int agentCount = 10000;
 
             bool pathRandomization = false; // Randomize path costs to prevent agents from following the same path
             bool penalizeStretchedRectangles = false; // (EXPERIMENTAL) Penalize paths that go through stretched rectangles to prevent too many agents in a small area
