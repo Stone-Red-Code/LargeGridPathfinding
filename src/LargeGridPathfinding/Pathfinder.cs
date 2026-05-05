@@ -9,6 +9,9 @@ using System.Threading.Tasks;
 
 namespace LargeGridPathfinding;
 
+/// <summary>
+/// Builds a zone adjacency graph and computes paths across rectangular zones.
+/// </summary>
 public class Pathfinder
 {
     private readonly ConcurrentDictionary<int, Rectangle> rectanglesSource;
@@ -19,11 +22,17 @@ public class Pathfinder
     private Dictionary<int, Rectangle> rectangleMap;
     private Dictionary<int, List<int>> adjacencyList;
 
+    /// <summary>
+    /// Returns the current zone adjacency list.
+    /// </summary>
     public Dictionary<int, List<int>> GetAdjacencyList()
     {
         return adjacencyList;
     }
 
+    /// <summary>
+    /// Returns the zone label at a grid point, or 0 when out of bounds.
+    /// </summary>
     public int GetGridValue(Point gridPoint)
     {
         if (gridPoint.X < 0 || gridPoint.Y < 0 || gridPoint.X >= grid.GetLength(1) || gridPoint.Y >= grid.GetLength(0))
@@ -34,6 +43,9 @@ public class Pathfinder
         return grid[gridPoint.Y, gridPoint.X];
     }
 
+    /// <summary>
+    /// Initializes a pathfinder over a mutable grid/rectangle source.
+    /// </summary>
     public Pathfinder(ConcurrentDictionary<int, Rectangle> rectangles, int[,] grid, int[,] weightGrid, bool pathRandomization = false, bool penalizeStretchedRectangles = false)
     {
         rectanglesSource = rectangles;
@@ -45,6 +57,9 @@ public class Pathfinder
         adjacencyList = [];
     }
 
+    /// <summary>
+    /// Finds a path between two grid points as coordinate waypoints.
+    /// </summary>
     public List<Vector2>? FindPath(Point startPoint, Point goalPoint)
     {
         if (!IsInBounds(startPoint.X, startPoint.Y) || !IsInBounds(goalPoint.X, goalPoint.Y))
@@ -115,6 +130,9 @@ public class Pathfinder
         return null;
     }
 
+    /// <summary>
+    /// Rebuilds the full adjacency graph from current rectangles.
+    /// </summary>
     public void BuildGraph()
     {
         rectangleMap = new Dictionary<int, Rectangle>(rectanglesSource);
@@ -131,6 +149,8 @@ public class Pathfinder
     {
         if (!rectangleMap.TryGetValue(rectangleLabel, out Rectangle rectangle))
         {
+            // Returning a very large cost keeps stale nodes from being attractive
+            // if they slip through due to transient graph inconsistencies.
             return int.MaxValue / 4;
         }
 
@@ -247,7 +267,7 @@ public class Pathfinder
             graph[id] = [];
         }
 
-        // For small graphs, use sequential algorithm (less overhead)
+        // For small graphs, sequential processing is usually faster than parallel setup/synchronization.
         if (count < 50)
         {
             for (int i = 0; i < count; i++)
@@ -273,7 +293,7 @@ public class Pathfinder
         }
         else
         {
-            // For larger graphs, use parallelization with partitioning
+            // For larger graphs, parallel pair-checking pays off despite synchronization overhead.
             object[] locks = new object[count];
             for (int i = 0; i < count; i++)
             {
@@ -296,7 +316,7 @@ public class Pathfinder
                     {
                         if (AreRectanglesAdjacent(rect1, rect2))
                         {
-                            // Use per-rectangle locks to minimize contention
+                            // Per-index locks reduce contention compared to one global graph lock.
                             lock (locks[i])
                             {
                                 graph[id1].Add(id2);
@@ -314,6 +334,9 @@ public class Pathfinder
         return graph;
     }
 
+    /// <summary>
+    /// Incrementally refreshes affected parts of the graph after local grid edits.
+    /// </summary>
     public void IncrementalUpdateGraph(HashSet<int> affectedZones)
     {
         if (affectedZones.Count == 0)

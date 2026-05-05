@@ -5,8 +5,14 @@ using MonoGame.Extended.Input;
 
 namespace LargeGridPathfinding;
 
+/// <summary>
+/// Input extension helpers for game controls.
+/// </summary>
 internal static class InputHelper
 {
+    /// <summary>
+    /// Converts WASD keyboard input into a movement vector.
+    /// </summary>
     public static Vector2 GetMovementDirection(this KeyboardStateExtended keyboardState)
     {
         Vector2 movementDirection = Vector2.Zero;

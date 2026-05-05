@@ -15,6 +15,9 @@ using System.Threading.Tasks;
 
 namespace LargeGridPathfinding;
 
+/// <summary>
+/// Main game host that handles UI, map editing, rendering, and background path updates.
+/// </summary>
 public class LargeGridPathfindingGame : Game
 {
     private enum BrushMode
@@ -42,10 +45,24 @@ public class LargeGridPathfindingGame : Game
         PenalizeStretchedRectangles
     }
 
+    /// <summary>
+    /// Supported map presets for startup generation.
+    /// </summary>
     private enum StartupMapPreset
     {
+        /// <summary>
+        /// Procedural room-like map with random walls and doors.
+        /// </summary>
         Rooms,
+
+        /// <summary>
+        /// No generated obstacles.
+        /// </summary>
         Empty,
+
+        /// <summary>
+        /// Dense 3x3 room lattice with deterministic offset doors for heavy zone fragmentation.
+        /// </summary>
         WorstCase
     }
 
@@ -78,7 +95,6 @@ public class LargeGridPathfindingGame : Game
     private Point? fillSelectionCurrent;
     private bool batchProcessingScheduled;
     private bool startupMenuActive = true;
-    private readonly bool startupInitializationStarted;
     private StartupMenuItem startupSelectedItem;
     private int startupGridWidth = 1000;
     private int startupGridHeight = 1000;
@@ -216,21 +232,27 @@ public class LargeGridPathfindingGame : Game
                     case StartupMenuItem.GridWidth:
                         startupGridWidth = Math.Clamp(startupGridWidth + (direction * 100), 500, 30000);
                         break;
+
                     case StartupMenuItem.GridHeight:
                         startupGridHeight = Math.Clamp(startupGridHeight + (direction * 100), 500, 30000);
                         break;
+
                     case StartupMenuItem.AgentCount:
                         startupAgentCount = Math.Clamp(startupAgentCount + (direction * 100), 100, 200000);
                         break;
+
                     case StartupMenuItem.MapPreset:
                         startupMapPreset = (StartupMapPreset)Math.Clamp((int)startupMapPreset + direction, (int)StartupMapPreset.Rooms, (int)StartupMapPreset.WorstCase);
                         break;
+
                     case StartupMenuItem.ObstacleDivisor:
                         startupObstacleDivisor = Math.Clamp(startupObstacleDivisor + direction, 1, 50);
                         break;
+
                     case StartupMenuItem.PathRandomization:
                         startupPathRandomization = direction > 0 || (direction >= 0 && startupPathRandomization);
                         break;
+
                     case StartupMenuItem.PenalizeStretchedRectangles:
                         startupPenalizeStretchedRectangles = direction > 0 || (direction >= 0 && startupPenalizeStretchedRectangles);
                         break;
@@ -515,7 +537,7 @@ public class LargeGridPathfindingGame : Game
         {
             uiSpriteBatch.Begin(SpriteSortMode.Deferred, samplerState: SamplerState.PointClamp);
 
-            if (startupMenuActive && !startupInitializationStarted)
+            if (startupMenuActive)
             {
                 uiSpriteBatch.DrawString(uiFont, "Startup Configuration", new Vector2(40, 30), Color.Black);
                 uiSpriteBatch.DrawString(uiFont, "Arrow Up/Down: Select  Arrow Left/Right: Change  Enter: Start", new Vector2(40, 60), Color.Black);
@@ -748,6 +770,9 @@ public class LargeGridPathfindingGame : Game
         base.Draw(gameTime);
     }
 
+    /// <summary>
+    /// Builds the initial grid and starts the path update worker using the startup configuration.
+    /// </summary>
     private void StartInitializationTask(int width, int height, int agentCount, StartupMapPreset mapPreset, int obstacleDivisor, bool pathRandomization, bool penalizeStretchedRectangles)
     {
         _ = Task.Run(() =>
@@ -769,7 +794,10 @@ public class LargeGridPathfindingGame : Game
                 int obstacleIterations = Math.Max(0, (width + height) / Math.Max(1, obstacleDivisor));
                 int minObstacleSize = 5;
                 int minDimension = Math.Min(width, height);
+                // Using a sub-linear exponent keeps small maps close to previous behavior,
+                // but prevents obstacle size from exploding on huge maps (e.g. 10k x 10k).
                 int scaledByDimension = (int)Math.Round(Math.Pow(minDimension, 0.4) * 2.1);
+                // This upper cap prevents very long walls on thin maps where one dimension is small.
                 int maxByDimension = Math.Max(minObstacleSize + 1, minDimension / 4);
                 int maxObstacleSize = Math.Max(minObstacleSize + 1, Math.Min(scaledByDimension, maxByDimension));
 
@@ -832,6 +860,9 @@ public class LargeGridPathfindingGame : Game
                         int local = x % pitch;
                         int baseX = x - local;
                         bool oddSegment = (baseX / pitch % 2) == 1;
+                        // We intentionally alternate door offsets between left and right side of each room segment.
+                        // If we always place centered doors, many transitions become symmetric and produce fewer
+                        // distinct rectangular splits. Offsetting increases boundary complexity while staying connected.
                         int offset = ((rowIndex % 2 == 0) ^ oddSegment) ? 1 : 3; // left/right offset
                         bool isDoor = local == offset;
 
@@ -862,6 +893,8 @@ public class LargeGridPathfindingGame : Game
                         int local = y % pitch;
                         int baseY = y - local;
                         bool oddSegment = (baseY / pitch % 2) == 1;
+                        // Same idea vertically: alternating top/bottom door offsets avoids repetitive straight corridors
+                        // and keeps the whole lattice navigable with a high number of zone boundaries.
                         int offset = ((colIndex % 2 == 0) ^ oddSegment) ? 1 : 3; // top/bottom offset
                         bool isDoor = local == offset;
 
@@ -912,7 +945,9 @@ public class LargeGridPathfindingGame : Game
         });
     }
 
-    // Handles pathfinding calculations in a separate task
+    /// <summary>
+    /// Handles graph/path refresh work on a dedicated long-running task.
+    /// </summary>
     private void StartUpdatePathTask()
     {
         _ = Task.Factory.StartNew(async () =>
@@ -1100,7 +1135,7 @@ public class LargeGridPathfindingGame : Game
 
                 if (resetWeightPoints.Length > 0)
                 {
-                    affectedZones.UnionWith(gridFiller.SetTileWeightsWithAffected(resetWeightPoints, 1));
+                    affectedZones.UnionWith(gridFiller.ResetTileWeightsWithAffected(resetWeightPoints));
                 }
 
                 if (placeObstacleRectangles.Length > 0)

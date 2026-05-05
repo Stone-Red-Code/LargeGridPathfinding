@@ -3,20 +3,32 @@ using System.Collections.Generic;
 
 namespace LargeGridPathfinding;
 
+/// <summary>
+/// Tracks named progress entries for long-running operations.
+/// </summary>
 internal class ProgressTracker
 {
     private readonly List<ProgressData> progresses = [];
 
+    /// <summary>
+    /// Adds a determinate progress entry.
+    /// </summary>
     public ProgressData AddProgress(string name, out IProgress<float> progress)
     {
         return AddProgress(name, false, false, out progress);
     }
 
+    /// <summary>
+    /// Adds an optionally indeterminate progress entry.
+    /// </summary>
     public ProgressData AddProgress(string name, bool indeterminate, out IProgress<float> progress)
     {
         return AddProgress(name, indeterminate, false, out progress);
     }
 
+    /// <summary>
+    /// Adds a progress entry with full control over removal behavior.
+    /// </summary>
     public ProgressData AddProgress(string name, bool indeterminate, bool disableAutoRemove, out IProgress<float> progress)
     {
         CustomProgress<float> newProgress = new CustomProgress<float>();
@@ -33,6 +45,9 @@ internal class ProgressTracker
         return progressData;
     }
 
+    /// <summary>
+    /// Removes a previously added progress entry.
+    /// </summary>
     public void RemoveProgress(ProgressData progressData)
     {
         lock (progresses)
@@ -41,6 +56,9 @@ internal class ProgressTracker
         }
     }
 
+    /// <summary>
+    /// Returns active progress entries.
+    /// </summary>
     public IReadOnlyList<ProgressData> GetProgresses()
     {
         return progresses;
@@ -50,12 +68,16 @@ internal class ProgressTracker
     {
         progressData.Progress = progress;
 
+        // Auto-removal keeps the HUD uncluttered once tasks finish.
         if (progress >= 1 && !progressData.DoNotRemove)
         {
             RemoveProgress(progressData);
         }
     }
 
+    /// <summary>
+    /// Immutable metadata with mutable progress value for one tracked task.
+    /// </summary>
     public class ProgressData(string name, bool indeterminate, bool doNotRemove)
     {
         public string Name { get; } = name;
@@ -64,6 +86,9 @@ internal class ProgressTracker
         public bool DoNotRemove { get; } = doNotRemove;
     }
 
+    /// <summary>
+    /// Minimal IProgress implementation exposing ProgressChanged events.
+    /// </summary>
     public class CustomProgress<T>() : IProgress<T>
     {
         public EventHandler<T>? ProgressChanged { get; set; }

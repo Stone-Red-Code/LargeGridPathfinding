@@ -9,6 +9,9 @@ using System.Threading.Tasks;
 
 namespace LargeGridPathfinding;
 
+/// <summary>
+/// Maintains grid labels/weights and generates rectangular walkable zones.
+/// </summary>
 public class GridFiller
 {
     private const int RecalculationRadius = 24;
@@ -21,6 +24,9 @@ public class GridFiller
     public int Width { get; }
     public int Height { get; }
 
+    /// <summary>
+    /// Initializes an empty grid with default tile weights.
+    /// </summary>
     public GridFiller(int width, int height)
     {
         Width = width;
@@ -38,6 +44,9 @@ public class GridFiller
         }
     }
 
+    /// <summary>
+    /// Fills the selected region with maximal same-weight rectangles.
+    /// </summary>
     public void FillGrid(int? x1 = null, int? y1 = null, int? x2 = null, int? y2 = null, bool fillAll = false, IProgress<float>? totalProgress = null, IProgress<float>? calculatingCandidatesProgress = null, IProgress<float>? placingCandidatesProgress = null)
     {
         lock (mutationLock)
@@ -185,16 +194,25 @@ public class GridFiller
         }
     }
 
+    /// <summary>
+    /// Places a single obstacle rectangle.
+    /// </summary>
     public void PlaceObstacle(Rectangle rectangle)
     {
         PlaceObstacles([rectangle]);
     }
 
+    /// <summary>
+    /// Places obstacle rectangles and optionally recalculates affected zones.
+    /// </summary>
     public void PlaceObstacles(IEnumerable<Rectangle> rectangles, bool recalculate = true)
     {
         _ = PlaceObstaclesWithAffected(rectangles, recalculate);
     }
 
+    /// <summary>
+    /// Places obstacles and returns changed zone labels.
+    /// </summary>
     public HashSet<int> PlaceObstaclesWithAffected(IEnumerable<Rectangle> rectangles, bool recalculate = true)
     {
         lock (mutationLock)
@@ -266,7 +284,7 @@ public class GridFiller
 
                 Debug.WriteLine("Placed obstacle");
 
-                // Return zones that changed (added, removed, or had their rectangle modified)
+                // Symmetric diff captures both split and merge operations from recalculation.
                 HashSet<int> affected = [.. zonesBefore];
                 affected.SymmetricExceptWith(zonesAfter);  // zones removed OR added
 
@@ -286,16 +304,25 @@ public class GridFiller
         }
     }
 
+    /// <summary>
+    /// Removes a single obstacle rectangle.
+    /// </summary>
     public void RemoveObstacle(Rectangle rectangle)
     {
         RemoveObstacles([rectangle]);
     }
 
+    /// <summary>
+    /// Removes obstacle rectangles and optionally recalculates affected zones.
+    /// </summary>
     public void RemoveObstacles(IEnumerable<Rectangle> rectangles, bool recalculate = true)
     {
         _ = RemoveObstaclesWithAffected(rectangles, recalculate);
     }
 
+    /// <summary>
+    /// Removes obstacles and returns changed zone labels.
+    /// </summary>
     public HashSet<int> RemoveObstaclesWithAffected(IEnumerable<Rectangle> rectangles, bool recalculate = true)
     {
         lock (mutationLock)
@@ -384,21 +411,33 @@ public class GridFiller
         }
     }
 
+    /// <summary>
+    /// Sets a single tile weight.
+    /// </summary>
     public void SetTileWeight(int x, int y, int weight)
     {
         SetTileWeights([new Point(x, y)], weight);
     }
 
+    /// <summary>
+    /// Resets a single tile weight to default.
+    /// </summary>
     public void ResetTileWeight(int x, int y)
     {
         ResetTileWeights([new Point(x, y)]);
     }
 
+    /// <summary>
+    /// Sets weights for tiles and optionally recalculates affected zones.
+    /// </summary>
     public void SetTileWeights(IEnumerable<Point> points, int weight, bool recalculate = true)
     {
         _ = SetTileWeightsWithAffected(points, weight, recalculate);
     }
 
+    /// <summary>
+    /// Sets weights and returns changed zone labels.
+    /// </summary>
     public HashSet<int> SetTileWeightsWithAffected(IEnumerable<Point> points, int weight, bool recalculate = true)
     {
         lock (mutationLock)
@@ -465,9 +504,17 @@ public class GridFiller
         }
     }
 
-    public void ResetTileWeights(IEnumerable<Point> points)
+    public HashSet<int> ResetTileWeightsWithAffected(IEnumerable<Point> points, bool recalculate = true)
     {
-        SetTileWeights(points, 1);
+        return SetTileWeightsWithAffected(points, 1, recalculate);
+    }
+
+    /// <summary>
+    /// Resets weights for multiple tiles to default.
+    /// </summary>
+    public void ResetTileWeights(IEnumerable<Point> points, bool recalculate = true)
+    {
+        SetTileWeights(points, 1, recalculate);
     }
 
     private bool IsAreaFree(int x, int y, int w, int h, int requiredWeight)
@@ -648,6 +695,7 @@ public class GridFiller
         if (removedRectangles.Count == 0)
         {
             applyChanges();
+            // Even if no existing zone was removed, edits may have opened space that needs fresh zoning.
             FillGrid(left, top, right, bottom);
             return;
         }
@@ -657,6 +705,8 @@ public class GridFiller
         int fillRight = Math.Max(right, removedRectangles.Max(r => r.Right));
         int fillBottom = Math.Max(bottom, removedRectangles.Max(r => r.Bottom));
 
+        // Expanding fill bounds to include removed rectangle extents avoids edge artifacts
+        // where old zone boundaries would otherwise leave suboptimal splits near the edit area.
         applyChanges();
         FillGrid(fillLeft, fillTop, fillRight, fillBottom);
     }
