@@ -38,6 +38,8 @@ public class LargeGridPathfindingGame : Game
     private readonly object pendingOperationsLock = new();
     private readonly ProgressTracker progressTracker = new ProgressTracker();
     private readonly List<Agent> agents = [];
+    private readonly HashSet<int> affectedZones = [];
+    private readonly object affectedZonesLock = new();
     private SpriteBatch spriteBatch = null!;
     private SpriteBatch uiSpriteBatch = null!;
     private SpriteFont uiFont = null!;
@@ -626,8 +628,8 @@ public class LargeGridPathfindingGame : Game
         _ = Task.Run(() =>
         {
             // Configuration options
-            int width = 10000;
-            int height = 10000;
+            int width = 1000;
+            int height = 1000;
             int agentCount = 10000;
 
             bool pathRandomization = false; // Randomize path costs to prevent agents from following the same path
@@ -749,42 +751,88 @@ public class LargeGridPathfindingGame : Game
             {
                 try
                 {
-                    if (gridChanged)
+                    HashSet<int> localAffectedZones;
+                    lock (affectedZonesLock)
                     {
+                        if (affectedZones.Count == 0)
+                        {
+                            localAffectedZones = [];
+                        }
+                        else
+                        {
+                            localAffectedZones = [.. affectedZones];
+                            affectedZones.Clear();
+                        }
+                    }
+
+                    if (localAffectedZones.Count > 0)
+                    {
+                        ProgressTracker.ProgressData progressDataUpdateGraph = progressTracker.AddProgress("Updating graph", true, out _);
+
+                        // Use incremental update instead of full rebuild
+                        pathfinder.IncrementalUpdateGraph(localAffectedZones);
+                        progressTracker.RemoveProgress(progressDataUpdateGraph);
+                    }
+                    else if (gridChanged)
+                    {
+                        // Full rebuild only if grid changed but no zones tracked (e.g., initial grid fill)
                         gridChanged = false;
                         ProgressTracker.ProgressData progressDataBuildGraph = progressTracker.AddProgress("Rebuilding graph", true, out _);
                         pathfinder.RebuildGraph();
                         progressTracker.RemoveProgress(progressDataBuildGraph);
                     }
 
-                    Agent[] agentsRequirePath = agents.Where(a => a.Path is null).ToArray();
-
-                    if (agentsRequirePath.Length != 0)
+                    // Efficiently collect agents without paths (avoid LINQ allocation on hot path)
+                    List<Agent> agentsRequirePathList = new List<Agent>(Math.Min(agents.Count, 16)); // pre-allocate reasonable capacity
+                    foreach (Agent agent in agents)
                     {
-                        ProgressTracker.ProgressData progressDataPaths = progressTracker.AddProgress($"Calculating {agentsRequirePath.Length} paths", out IProgress<float> progress);
-
-                        int pathsCalculated = 0;
-                        int reportInterval = Math.Max(1, agentsRequirePath.Length / 10);
-
-                        // Calculate paths for agents that require a new path
-                        _ = Parallel.For(0, agentsRequirePath.Length, i =>
+                        if (agent.Path is null)
                         {
-                            Agent agent = agentsRequirePath[i];
+                            agentsRequirePathList.Add(agent);
+                        }
+                    }
 
-                            agent.Path = CalculatePath(agent.GridPosition, agent.Destination);
-                            agent.Path ??= CalculatePath();
-                            agent.Position = agent.Path?[0] ?? agent.Position;
-                            agent.NextPosition = agent.Path?[1] ?? agent.Position;
-                            agent.Destination = agent.Path?.LastOrDefault().ToPoint();
+                    if (agentsRequirePathList.Count != 0)
+                    {
+                        int agentCount = agentsRequirePathList.Count;
+                        ProgressTracker.ProgressData progressDataPaths = progressTracker.AddProgress($"Calculating {agentCount} paths", out IProgress<float> progress);
 
-                            int localPathsCalculated = Interlocked.Increment(ref pathsCalculated);
+                        // Use ParallelOptions to control concurrency
+                        ParallelOptions parallelOptions = new ParallelOptions
+                        {
+                            MaxDegreeOfParallelism = Environment.ProcessorCount
+                        };
 
-                            if (localPathsCalculated % reportInterval == 0)
+                        // Batch progress reporting every 100ms instead of modulo checks
+                        long lastProgressReport = Environment.TickCount64;
+                        int pathsCalculated = 0;
+
+                        _ = Parallel.ForEach(agentsRequirePathList, parallelOptions, agent =>
+                        {
+                            // Calculate path once and reuse
+                            List<Vector2>? path = CalculatePath(agent.GridPosition, agent.Destination) ?? CalculatePath();
+                            agent.Path = path;
+
+                            // Avoid repeated property access and null checks
+                            if (path?.Count > 0)
                             {
-                                progress.Report((float)localPathsCalculated / agentsRequirePath.Length);
+                                agent.Position = path[0];
+                                agent.NextPosition = path.Count > 1 ? path[1] : path[0];
+                                agent.Destination = new Point((int)path[^1].X, (int)path[^1].Y);
+                            }
+
+                            // Batch progress updates to reduce lock contention
+                            int local = Interlocked.Increment(ref pathsCalculated);
+                            long now = Environment.TickCount64;
+                            if (now - lastProgressReport > 100)
+                            {
+                                progress.Report((float)local / agentCount);
+                                lastProgressReport = now;
                             }
                         });
 
+                        // Report final progress
+                        progress.Report(1.0f);
                         progressTracker.RemoveProgress(progressDataPaths);
                     }
 
@@ -867,24 +915,28 @@ public class LargeGridPathfindingGame : Game
                 .Where(op => op.Value.Kind == PendingOperationKind.RemoveObstacle)
                 .Select(op => new Rectangle(op.Key.X, op.Key.Y, 1, 1))];
 
-            foreach (IGrouping<int, Point> weightGroup in weightGroups)
+            // Track affected zones for incremental graph updates
+            lock (affectedZonesLock)
             {
-                gridFiller.SetTileWeights(weightGroup, weightGroup.Key);
-            }
+                foreach (IGrouping<int, Point> weightGroup in weightGroups)
+                {
+                    affectedZones.UnionWith(gridFiller.SetTileWeightsWithAffected(weightGroup, weightGroup.Key));
+                }
 
-            if (resetWeightPoints.Length > 0)
-            {
-                gridFiller.ResetTileWeights(resetWeightPoints);
-            }
+                if (resetWeightPoints.Length > 0)
+                {
+                    affectedZones.UnionWith(gridFiller.SetTileWeightsWithAffected(resetWeightPoints, 1));
+                }
 
-            if (placeObstacleRectangles.Length > 0)
-            {
-                gridFiller.PlaceObstacles(placeObstacleRectangles);
-            }
+                if (placeObstacleRectangles.Length > 0)
+                {
+                    affectedZones.UnionWith(gridFiller.PlaceObstaclesWithAffected(placeObstacleRectangles));
+                }
 
-            if (removeObstacleRectangles.Length > 0)
-            {
-                gridFiller.RemoveObstacles(removeObstacleRectangles);
+                if (removeObstacleRectangles.Length > 0)
+                {
+                    affectedZones.UnionWith(gridFiller.RemoveObstaclesWithAffected(removeObstacleRectangles));
+                }
             }
 
             foreach (KeyValuePair<Point, PendingOperation> operation in operationsBatch)

@@ -21,6 +21,13 @@ public class Pathfinder
 
     public Dictionary<int, List<int>> GetAdjacencyList() => adjacencyList;
 
+    public int GetGridValue(Point gridPoint)
+    {
+        if (gridPoint.X < 0 || gridPoint.Y < 0 || gridPoint.X >= grid.GetLength(1) || gridPoint.Y >= grid.GetLength(0))
+            return 0;
+        return grid[gridPoint.Y, gridPoint.X];
+    }
+
     public Pathfinder(ConcurrentDictionary<int, Rectangle> rectangles, int[,] grid, int[,] weightGrid, bool pathRandomization = false, bool penalizeStretchedRectangles = false)
     {
         rectanglesSource = rectangles;
@@ -367,10 +374,20 @@ public class Pathfinder
             }
         }
 
-        // Clear adjacencies for all affected zones
+        // Clear adjacencies for all affected zones AND collect zones that referenced affected zones
         foreach (int zoneId in allAffected)
         {
             adjacencyList[zoneId].Clear();
+        }
+        
+        // Also remove references FROM other zones TO affected zones
+        // (since those adjacencies will be recalculated if needed)
+        foreach (int otherZoneId in adjacencyList.Keys.ToList())
+        {
+            if (!allAffected.Contains(otherZoneId))
+            {
+                adjacencyList[otherZoneId].RemoveAll(z => affectedZones.Contains(z));
+            }
         }
 
         // Recalculate adjacencies between affected zones and all zones

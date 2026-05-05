@@ -230,8 +230,9 @@ public class GridFiller
 
             if (changed)
             {
-                // Capture zones before recalculation
+                // Capture zones and rectangles before recalculation
                 HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
+                var rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
 
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
@@ -259,9 +260,19 @@ public class GridFiller
 
                 Debug.WriteLine("Placed obstacle");
 
-                // Return all zones that were added or removed (symmetric difference + union)
-                var affected = new HashSet<int>(zonesBefore);
-                affected.UnionWith(zonesAfter);
+                // Return zones that changed (added, removed, or had their rectangle modified)
+                HashSet<int> affected = new(zonesBefore);
+                affected.SymmetricExceptWith(zonesAfter);  // zones removed OR added
+                
+                // Also include zones whose rectangles changed
+                foreach (int zoneId in zonesBefore.Where(z => zonesAfter.Contains(z)))
+                {
+                    if (PlacedRectangles[zoneId] != rectBefore[zoneId])
+                    {
+                        affected.Add(zoneId);
+                    }
+                }
+                
                 return affected;
             }
 
@@ -320,8 +331,9 @@ public class GridFiller
 
             if (changed)
             {
-                // Capture zones before recalculation
+                // Capture zones and rectangles before recalculation
                 HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
+                var rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
 
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
@@ -347,9 +359,18 @@ public class GridFiller
 
                 Debug.WriteLine("Removed obstacle");
 
-                // Return all zones that were added or removed
-                var affected = new HashSet<int>(zonesBefore);
-                affected.UnionWith(zonesAfter);
+                // Return zones that changed (added, removed, or had their rectangle modified)
+                HashSet<int> affected = new(zonesBefore);
+                affected.SymmetricExceptWith(zonesAfter);
+                
+                foreach (int zoneId in zonesBefore.Where(z => zonesAfter.Contains(z)))
+                {
+                    if (PlacedRectangles[zoneId] != rectBefore[zoneId])
+                    {
+                        affected.Add(zoneId);
+                    }
+                }
+                
                 return affected;
             }
 
@@ -399,8 +420,9 @@ public class GridFiller
 
             if (changed)
             {
-                // Capture zones before recalculation
+                // Capture zones and rectangles before recalculation
                 HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
+                var rectBefore = new Dictionary<int, Rectangle>(PlacedRectangles);
 
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
@@ -418,9 +440,18 @@ public class GridFiller
                 // Capture zones after recalculation
                 HashSet<int> zonesAfter = new(PlacedRectangles.Keys);
 
-                // Return all zones that were added or removed
-                var affected = new HashSet<int>(zonesBefore);
-                affected.UnionWith(zonesAfter);
+                // Return zones that changed (added, removed, or had their rectangle modified)
+                HashSet<int> affected = new(zonesBefore);
+                affected.SymmetricExceptWith(zonesAfter);
+                
+                foreach (int zoneId in zonesBefore.Where(z => zonesAfter.Contains(z)))
+                {
+                    if (PlacedRectangles[zoneId] != rectBefore[zoneId])
+                    {
+                        affected.Add(zoneId);
+                    }
+                }
+                
                 return affected;
             }
 
