@@ -784,7 +784,8 @@ public class LargeGridPathfindingGame : Game
                     }
 
                     // Efficiently collect agents without paths (avoid LINQ allocation on hot path)
-                    List<Agent> agentsRequirePathList = new List<Agent>(Math.Min(agents.Count, 16)); // pre-allocate reasonable capacity
+                    List<Agent> agentsRequirePathList = new List<Agent>(agents.Count);
+
                     foreach (Agent agent in agents)
                     {
                         if (agent.Path is null)
@@ -796,43 +797,46 @@ public class LargeGridPathfindingGame : Game
                     if (agentsRequirePathList.Count != 0)
                     {
                         int agentCount = agentsRequirePathList.Count;
+                        int batchSize = Math.Max(64, agentCount / (Environment.ProcessorCount * 4));
+
                         ProgressTracker.ProgressData progressDataPaths = progressTracker.AddProgress($"Calculating {agentCount} paths", out IProgress<float> progress);
 
-                        // Use ParallelOptions to control concurrency
                         ParallelOptions parallelOptions = new ParallelOptions
                         {
                             MaxDegreeOfParallelism = Environment.ProcessorCount
                         };
 
-                        // Batch progress reporting every 100ms instead of modulo checks
                         long lastProgressReport = Environment.TickCount64;
                         int pathsCalculated = 0;
 
-                        _ = Parallel.ForEach(agentsRequirePathList, parallelOptions, agent =>
-                        {
-                            // Calculate path once and reuse
-                            List<Vector2>? path = CalculatePath(agent.GridPosition, agent.Destination) ?? CalculatePath();
-                            agent.Path = path;
-
-                            // Avoid repeated property access and null checks
-                            if (path?.Count > 0)
+                        _ = Parallel.ForEach(Partitioner.Create(0, agentCount, batchSize), parallelOptions, range =>
                             {
-                                agent.Position = path[0];
-                                agent.NextPosition = path.Count > 1 ? path[1] : path[0];
-                                agent.Destination = new Point((int)path[^1].X, (int)path[^1].Y);
-                            }
+                                for (int i = range.Item1; i < range.Item2; i++)
+                                {
+                                    Agent agent = agentsRequirePathList[i];
 
-                            // Batch progress updates to reduce lock contention
-                            int local = Interlocked.Increment(ref pathsCalculated);
-                            long now = Environment.TickCount64;
-                            if (now - lastProgressReport > 100)
-                            {
-                                progress.Report((float)local / agentCount);
-                                lastProgressReport = now;
-                            }
-                        });
+                                    List<Vector2>? path = CalculatePath(agent.GridPosition, agent.Destination)
+                                        ?? CalculatePath();
 
-                        // Report final progress
+                                    agent.Path = path;
+
+                                    if (path?.Count > 0)
+                                    {
+                                        agent.Position = path[0];
+                                        agent.NextPosition = path.Count > 1 ? path[1] : path[0];
+                                        agent.Destination = new Point((int)path[^1].X, (int)path[^1].Y);
+                                    }
+                                }
+
+                                int local = Interlocked.Add(ref pathsCalculated, range.Item2 - range.Item1);
+                                long now = Environment.TickCount64;
+                                if (now - lastProgressReport > 100)
+                                {
+                                    progress.Report((float)local / agentCount);
+                                    _ = Interlocked.Exchange(ref lastProgressReport, now);
+                                }
+                            });
+
                         progress.Report(1.0f);
                         progressTracker.RemoveProgress(progressDataPaths);
                     }
