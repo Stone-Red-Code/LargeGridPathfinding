@@ -90,6 +90,12 @@ public class GridFiller
                             if (w > 0 && h > 0)
                             {
                                 candidates.Add((x, y, w, h, tileWeight));
+
+                                // This does technically create some inefficiency by skipping some potential candidates,
+                                // but it drastically reduces the number of candidates and thus speeds up the overall process.
+                                // Using x += 1 here instead would be the semantically correct way to find all candidates.
+                                // The tradeoff is either slower filling with more candidates or faster filling with fewer candidates.
+                                // Fewer candidates lead to better pathfinding performance.
                                 x += Math.Max(1, Math.Min(w, h));
                             }
                             else
