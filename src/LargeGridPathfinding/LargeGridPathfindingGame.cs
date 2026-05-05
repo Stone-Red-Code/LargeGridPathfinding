@@ -767,6 +767,7 @@ public class LargeGridPathfindingGame : Game
 
                     if (localAffectedZones.Count > 0)
                     {
+                        gridChanged = false;
                         ProgressTracker.ProgressData progressDataUpdateGraph = progressTracker.AddProgress("Updating graph", true, out _);
 
                         // Use incremental update instead of full rebuild
