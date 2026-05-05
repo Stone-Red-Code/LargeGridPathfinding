@@ -5,10 +5,11 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace LargeGridPathfinding;
 
-internal class Pathfinder
+public class Pathfinder
 {
     private readonly ConcurrentDictionary<int, Rectangle> rectanglesSource;
     private readonly int[,] grid;
@@ -17,6 +18,8 @@ internal class Pathfinder
     private readonly bool penalizeStretchedRectangles;
     private Dictionary<int, Rectangle> rectangleMap;
     private Dictionary<int, List<int>> adjacencyList;
+
+    public Dictionary<int, List<int>> GetAdjacencyList() => adjacencyList;
 
     public Pathfinder(ConcurrentDictionary<int, Rectangle> rectangles, int[,] grid, int[,] weightGrid, bool pathRandomization = false, bool penalizeStretchedRectangles = false)
     {
@@ -212,7 +215,7 @@ internal class Pathfinder
         return new Vector2(closestX, closestY);
     }
 
-    private Dictionary<int, List<int>> BuildGraph()
+    private Dictionary<int, List<int>> BuildGraphBaseline()
     {
         Dictionary<int, List<int>> graph = [];
 
@@ -233,6 +236,169 @@ internal class Pathfinder
         }
 
         return graph;
+    }
+
+    private Dictionary<int, List<int>> BuildGraph()
+    {
+        var rectangleList = rectangleMap.ToList();
+        int count = rectangleList.Count;
+
+        // Pre-allocate dictionary with empty lists
+        Dictionary<int, List<int>> graph = [];
+        foreach (var (id, _) in rectangleList)
+        {
+            graph[id] = [];
+        }
+
+        // For small graphs, use sequential algorithm (less overhead)
+        if (count < 50)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                var (id1, rect1) = rectangleList[i];
+
+                for (int j = i + 1; j < count; j++)
+                {
+                    var (id2, rect2) = rectangleList[j];
+
+                    // Quick bounding box check
+                    if (rect1.Right >= rect2.Left && rect2.Right >= rect1.Left &&
+                        rect1.Bottom >= rect2.Top && rect2.Bottom >= rect1.Top)
+                    {
+                        if (AreRectanglesAdjacent(rect1, rect2))
+                        {
+                            graph[id1].Add(id2);
+                            graph[id2].Add(id1);
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            // For larger graphs, use parallelization with partitioning
+            object[] locks = new object[count];
+            for (int i = 0; i < count; i++)
+            {
+                locks[i] = new object();
+            }
+
+            var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+
+            Parallel.For(0, count, parallelOptions, i =>
+            {
+                var (id1, rect1) = rectangleList[i];
+
+                for (int j = i + 1; j < count; j++)
+                {
+                    var (id2, rect2) = rectangleList[j];
+
+                    // Quick bounding box check
+                    if (rect1.Right >= rect2.Left && rect2.Right >= rect1.Left &&
+                        rect1.Bottom >= rect2.Top && rect2.Bottom >= rect1.Top)
+                    {
+                        if (AreRectanglesAdjacent(rect1, rect2))
+                        {
+                            // Use per-rectangle locks to minimize contention
+                            lock (locks[i])
+                            {
+                                graph[id1].Add(id2);
+                            }
+                            lock (locks[j])
+                            {
+                                graph[id2].Add(id1);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        return graph;
+    }
+
+    public void IncrementalUpdateGraph(HashSet<int> affectedZones)
+    {
+        if (affectedZones.Count == 0)
+        {
+            return;
+        }
+
+        // Remove zones that no longer exist in rectangleMap
+        var orphanedZones = adjacencyList.Keys.Where(z => !rectangleMap.ContainsKey(z) && !rectanglesSource.ContainsKey(z)).ToList();
+        foreach (int zone in orphanedZones)
+        {
+            adjacencyList.Remove(zone);
+        }
+
+        // Update rectangleMap with current state and collect all affected zones
+        HashSet<int> allAffected = [..affectedZones];
+        foreach (int zoneId in affectedZones)
+        {
+            if (rectanglesSource.TryGetValue(zoneId, out Rectangle rect))
+            {
+                rectangleMap[zoneId] = rect;
+            }
+            else
+            {
+                rectangleMap.Remove(zoneId);
+                adjacencyList.Remove(zoneId);
+            }
+        }
+
+        // Also collect zones that had connections to affected zones (they might need updates too)
+        foreach (int zoneId in affectedZones)
+        {
+            if (adjacencyList.TryGetValue(zoneId, out var neighbors))
+            {
+                foreach (int neighbor in neighbors.ToList())
+                {
+                    allAffected.Add(neighbor);
+                }
+            }
+        }
+
+        // Ensure all zones have entries in adjacencyList
+        foreach (int zoneId in allAffected)
+        {
+            if (!adjacencyList.ContainsKey(zoneId))
+            {
+                adjacencyList[zoneId] = [];
+            }
+        }
+
+        // Clear adjacencies for all affected zones
+        foreach (int zoneId in allAffected)
+        {
+            adjacencyList[zoneId].Clear();
+        }
+
+        // Recalculate adjacencies between affected zones and all zones
+        var allZonesList = rectangleMap.ToList();
+
+        foreach (int zoneId in allAffected)
+        {
+            if (!rectangleMap.TryGetValue(zoneId, out Rectangle rect1))
+                continue;
+
+            foreach (var (otherId, rect2) in allZonesList)
+            {
+                if (otherId == zoneId)
+                    continue;
+
+                if (rect1.Right >= rect2.Left && rect2.Right >= rect1.Left &&
+                    rect1.Bottom >= rect2.Top && rect2.Bottom >= rect1.Top)
+                {
+                    if (AreRectanglesAdjacent(rect1, rect2))
+                    {
+                        if (!adjacencyList[zoneId].Contains(otherId))
+                            adjacencyList[zoneId].Add(otherId);
+                        if (!adjacencyList[otherId].Contains(zoneId))
+                            adjacencyList[otherId].Add(zoneId);
+                    }
+                }
+            }
+        }
     }
 
     private (Vector2 entry, Vector2 exit) GetTransitionPoints(int from, int to, int? next = null)

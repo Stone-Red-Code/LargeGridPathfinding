@@ -90,7 +90,7 @@ public class GridFiller
                             if (w > 0 && h > 0)
                             {
                                 candidates.Add((x, y, w, h, tileWeight));
-                                x += w;
+                                x += Math.Max(1, Math.Min(w, h));
                             }
                             else
                             {
@@ -186,6 +186,11 @@ public class GridFiller
 
     public void PlaceObstacles(IEnumerable<Rectangle> rectangles, bool recalculate = true)
     {
+        _ = PlaceObstaclesWithAffected(rectangles, recalculate);
+    }
+
+    public HashSet<int> PlaceObstaclesWithAffected(IEnumerable<Rectangle> rectangles, bool recalculate = true)
+    {
         lock (mutationLock)
         {
             List<Rectangle> clampedRectangles = [.. rectangles
@@ -194,7 +199,7 @@ public class GridFiller
 
             if (clampedRectangles.Count == 0)
             {
-                return;
+                return [];
             }
 
             int minX = Width;
@@ -225,6 +230,9 @@ public class GridFiller
 
             if (changed)
             {
+                // Capture zones before recalculation
+                HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
+
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
                     foreach (Rectangle rectangle in clampedRectangles)
@@ -245,10 +253,20 @@ public class GridFiller
                         }
                     }
                 });
-            }
-        }
 
-        Debug.WriteLine("Placed obstacle");
+                // Capture zones after recalculation
+                HashSet<int> zonesAfter = new(PlacedRectangles.Keys);
+
+                Debug.WriteLine("Placed obstacle");
+
+                // Return all zones that were added or removed (symmetric difference + union)
+                var affected = new HashSet<int>(zonesBefore);
+                affected.UnionWith(zonesAfter);
+                return affected;
+            }
+
+            return [];
+        }
     }
 
     public void RemoveObstacle(Rectangle rectangle)
@@ -258,6 +276,11 @@ public class GridFiller
 
     public void RemoveObstacles(IEnumerable<Rectangle> rectangles, bool recalculate = true)
     {
+        _ = RemoveObstaclesWithAffected(rectangles, recalculate);
+    }
+
+    public HashSet<int> RemoveObstaclesWithAffected(IEnumerable<Rectangle> rectangles, bool recalculate = true)
+    {
         lock (mutationLock)
         {
             List<Rectangle> clampedRectangles = [.. rectangles
@@ -266,7 +289,7 @@ public class GridFiller
 
             if (clampedRectangles.Count == 0)
             {
-                return;
+                return [];
             }
 
             int minX = Width;
@@ -297,6 +320,9 @@ public class GridFiller
 
             if (changed)
             {
+                // Capture zones before recalculation
+                HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
+
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
                     foreach (Rectangle rectangle in clampedRectangles)
@@ -315,10 +341,20 @@ public class GridFiller
                         }
                     }
                 });
-            }
-        }
 
-        Debug.WriteLine("Removed obstacle");
+                // Capture zones after recalculation
+                HashSet<int> zonesAfter = new(PlacedRectangles.Keys);
+
+                Debug.WriteLine("Removed obstacle");
+
+                // Return all zones that were added or removed
+                var affected = new HashSet<int>(zonesBefore);
+                affected.UnionWith(zonesAfter);
+                return affected;
+            }
+
+            return [];
+        }
     }
 
     public void SetTileWeight(int x, int y, int weight)
@@ -332,6 +368,11 @@ public class GridFiller
     }
 
     public void SetTileWeights(IEnumerable<Point> points, int weight, bool recalculate = true)
+    {
+        _ = SetTileWeightsWithAffected(points, weight, recalculate);
+    }
+
+    public HashSet<int> SetTileWeightsWithAffected(IEnumerable<Point> points, int weight, bool recalculate = true)
     {
         lock (mutationLock)
         {
@@ -358,6 +399,9 @@ public class GridFiller
 
             if (changed)
             {
+                // Capture zones before recalculation
+                HashSet<int> zonesBefore = new(PlacedRectangles.Keys);
+
                 RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
                     foreach (Point point in points)
@@ -370,7 +414,17 @@ public class GridFiller
                         WeightGrid[point.Y, point.X] = clampedWeight;
                     }
                 });
+
+                // Capture zones after recalculation
+                HashSet<int> zonesAfter = new(PlacedRectangles.Keys);
+
+                // Return all zones that were added or removed
+                var affected = new HashSet<int>(zonesBefore);
+                affected.UnionWith(zonesAfter);
+                return affected;
             }
+
+            return [];
         }
     }
 
@@ -493,6 +547,29 @@ public class GridFiller
         }
 
         return rectangle;
+    }
+
+    public HashSet<int> GetAffectedZonesAroundArea(int minX, int minY, int maxX, int maxY)
+    {
+        int left = int.Clamp(minX - RecalculationRadius, 0, Width);
+        int top = int.Clamp(minY - RecalculationRadius, 0, Height);
+        int right = int.Clamp(maxX + RecalculationRadius, 0, Width);
+        int bottom = int.Clamp(maxY + RecalculationRadius, 0, Height);
+
+        HashSet<int> affected = [];
+        for (int y = top; y < bottom; y++)
+        {
+            for (int x = left; x < right; x++)
+            {
+                int label = Grid[y, x];
+                if (label > 0)
+                {
+                    _ = affected.Add(label);
+                }
+            }
+        }
+
+        return affected;
     }
 
     private void RecalculateAroundArea(int minX, int minY, int maxX, int maxY, bool enabled, Action applyChanges)

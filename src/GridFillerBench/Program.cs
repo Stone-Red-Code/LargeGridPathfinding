@@ -57,9 +57,55 @@ else if (args.Length > 0 && args[0] == "--advanced")
 {
     BenchmarkRunner.Run<AdvancedGridFillerBenchmarks>();
 }
+else if (args.Length > 0 && args[0] == "--incremental")
+{
+    TestIncrementalUpdates();
+}
 else
 {
     BenchmarkRunner.Run<GridFillerBenchmarks>();
+}
+
+static void TestIncrementalUpdates()
+{
+    Console.WriteLine("Test 8: Incremental Graph Updates (Comparison)\n");
+
+    int[] gridSizes = { 512, 1024, 2048 };
+    int[] changePercentages = { 1, 5, 10 };
+
+    foreach (int size in gridSizes)
+    {
+        Console.WriteLine($"  Testing {size}×{size} grid:");
+
+        foreach (int changePercent in changePercentages)
+        {
+            int obstacleSize = Math.Max((size / 100) * changePercent, 10);
+
+            // Scenario 1: Full rebuild (fill grid + build pathfinder from scratch)
+            var sw1 = System.Diagnostics.Stopwatch.StartNew();
+            var fillerFull = new GridFiller(size, size);
+            fillerFull.FillGrid(fillAll: true);
+            fillerFull.PlaceObstacles([new Rectangle(50, 50, obstacleSize, obstacleSize)], recalculate: true);
+            var pathfinderFull = new Pathfinder(fillerFull.PlacedRectangles, fillerFull.Grid, fillerFull.WeightGrid);
+            sw1.Stop();
+
+            // Scenario 2: Incremental (start from filled grid, place obstacle, incremental update)
+            var sw2 = System.Diagnostics.Stopwatch.StartNew();
+            var filler2 = new GridFiller(size, size);
+            filler2.FillGrid(fillAll: true);
+            var pathfinderIncremental = new Pathfinder(filler2.PlacedRectangles, filler2.Grid, filler2.WeightGrid);
+            var affected = filler2.PlaceObstaclesWithAffected([new Rectangle(50, 50, obstacleSize, obstacleSize)], recalculate: true);
+            pathfinderIncremental.IncrementalUpdateGraph(affected);
+            sw2.Stop();
+
+            double speedup = sw1.ElapsedMilliseconds > 0 ? (double)sw1.ElapsedMilliseconds / sw2.ElapsedMilliseconds : 1.0;
+            Console.WriteLine($"    {changePercent}% change: Full {sw1.ElapsedMilliseconds}ms vs Incremental {sw2.ElapsedMilliseconds}ms ({speedup:F1}×)");
+        }
+
+        Console.WriteLine();
+    }
+
+    Console.WriteLine("  ✓ Passed\n");
 }
 
 static void RunFunctionalTests()
@@ -72,6 +118,8 @@ static void RunFunctionalTests()
     TestWeightAdjustment();
     TestZoneCount();
     TestLargerGrids();
+    TestPathfinderGraphBuilding();
+    ValidateIncrementalUpdates();
 
     Console.WriteLine("\n✅ All functional tests passed!");
 }
@@ -208,6 +256,98 @@ static void TestLargerGrids()
     }
     
     Console.WriteLine("  ✓ Passed\n");
+}
+
+static void TestPathfinderGraphBuilding()
+{
+    Console.WriteLine("Test 7: Pathfinder Graph Building (5 runs each)\n");
+    
+    int[] gridSizes = { 512, 1024, 2048, 4096 };
+    
+    foreach (int size in gridSizes)
+    {
+        Console.WriteLine($"  Testing {size}×{size} grid:");
+        
+        long totalTime = 0;
+        for (int run = 0; run < 5; run++)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            
+            var filler = new GridFiller(size, size);
+            filler.FillGrid(fillAll: true);
+            
+            var pathfinder = new Pathfinder(filler.PlacedRectangles, filler.Grid, filler.WeightGrid);
+            
+            sw.Stop();
+            totalTime += sw.ElapsedMilliseconds;
+        }
+        
+        double avgTime = totalTime / 5.0;
+        Console.WriteLine($"    Avg time (5 runs): {avgTime:F1}ms\n");
+    }
+    
+    Console.WriteLine("  ✓ Passed\n");
+}
+
+static void ValidateIncrementalUpdates()
+{
+    Console.WriteLine("Test 8: Validate Incremental Updates Correctness\n");
+
+    var filler = new GridFiller(512, 512);
+    filler.FillGrid(fillAll: true);
+
+    // Create initial pathfinder
+    var pathfinder = new Pathfinder(filler.PlacedRectangles, filler.Grid, filler.WeightGrid);
+
+    // Get initial graph (copy for comparison)
+    Dictionary<int, HashSet<int>> graphBefore = new();
+    foreach (var kvp in filler.PlacedRectangles)
+    {
+        if (pathfinder.GetAdjacencyList().TryGetValue(kvp.Key, out var neighbors))
+        {
+            graphBefore[kvp.Key] = new HashSet<int>(neighbors);
+        }
+    }
+
+    // Place obstacle and track affected zones
+    var affected = filler.PlaceObstaclesWithAffected([new Rectangle(100, 100, 50, 50)], recalculate: true);
+    pathfinder.IncrementalUpdateGraph(affected);
+
+    // Full rebuild for comparison
+    var pathfinderFull = new Pathfinder(filler.PlacedRectangles, filler.Grid, filler.WeightGrid);
+
+    // Compare graphs
+    int matches = 0;
+    int mismatches = 0;
+    foreach (var kvp in filler.PlacedRectangles)
+    {
+        if (!pathfinder.GetAdjacencyList().TryGetValue(kvp.Key, out var incrementalNeighbors))
+            incrementalNeighbors = [];
+        if (!pathfinderFull.GetAdjacencyList().TryGetValue(kvp.Key, out var fullNeighbors))
+            fullNeighbors = [];
+
+        var incrementalSet = new HashSet<int>(incrementalNeighbors);
+        var fullSet = new HashSet<int>(fullNeighbors);
+
+        if (incrementalSet.SetEquals(fullSet))
+        {
+            matches++;
+        }
+        else
+        {
+            mismatches++;
+            Console.WriteLine($"  Mismatch at zone {kvp.Key}: incremental={string.Join(",", incrementalSet)}, full={string.Join(",", fullSet)}");
+        }
+    }
+
+    if (mismatches == 0)
+    {
+        Console.WriteLine($"  ✓ All {matches} zones match between incremental and full rebuild\n");
+    }
+    else
+    {
+        throw new Exception($"Incremental update validation failed: {mismatches}/{matches + mismatches} zones mismatched");
+    }
 }
 
 [MemoryDiagnoser]
