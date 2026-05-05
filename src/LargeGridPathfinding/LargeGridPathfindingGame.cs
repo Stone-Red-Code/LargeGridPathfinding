@@ -51,7 +51,7 @@ public class LargeGridPathfindingGame : Game
     private bool showZones = true;
     private bool showGrid = false;
     private bool showPaths = false;
-    private BrushMode brushMode = BrushMode.Weight;
+    private BrushMode brushMode = BrushMode.Obstacle;
     private int paintWeight = 5;
     private Vector2? previousMousePosition;
     private bool wasShiftLeftDown;
