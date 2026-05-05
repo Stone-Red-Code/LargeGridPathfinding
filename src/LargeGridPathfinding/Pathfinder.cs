@@ -19,12 +19,18 @@ public class Pathfinder
     private Dictionary<int, Rectangle> rectangleMap;
     private Dictionary<int, List<int>> adjacencyList;
 
-    public Dictionary<int, List<int>> GetAdjacencyList() => adjacencyList;
+    public Dictionary<int, List<int>> GetAdjacencyList()
+    {
+        return adjacencyList;
+    }
 
     public int GetGridValue(Point gridPoint)
     {
         if (gridPoint.X < 0 || gridPoint.Y < 0 || gridPoint.X >= grid.GetLength(1) || gridPoint.Y >= grid.GetLength(0))
+        {
             return 0;
+        }
+
         return grid[gridPoint.Y, gridPoint.X];
     }
 
@@ -36,7 +42,7 @@ public class Pathfinder
         this.pathRandomization = pathRandomization;
         this.penalizeStretchedRectangles = penalizeStretchedRectangles;
         rectangleMap = new Dictionary<int, Rectangle>(rectangles);
-        adjacencyList = BuildGraph();
+        adjacencyList = [];
     }
 
     public List<Vector2>? FindPath(Point startPoint, Point goalPoint)
@@ -82,9 +88,9 @@ public class Pathfinder
 
             foreach (int neighbor in adjacencyList.TryGetValue(node, out List<int>? neighbors) ? neighbors : [])
             {
-                if (!visited.Contains(neighbor))
+                if (!visited.Contains(neighbor) && rectangleMap.ContainsKey(neighbor))
                 {
-                    List<int> newPath = new List<int>(path) { neighbor };
+                    List<int> newPath = [.. path, neighbor];
 
                     int newCost = cost + GetRectangleWeight(neighbor);
 
@@ -109,18 +115,25 @@ public class Pathfinder
         return null;
     }
 
-    public void RebuildGraph()
+    public void BuildGraph()
     {
         rectangleMap = new Dictionary<int, Rectangle>(rectanglesSource);
         adjacencyList.Clear();
-        adjacencyList = BuildGraph();
+        adjacencyList = BuildGraphInternal();
     }
 
-    private bool IsInBounds(int x, int y) => x >= 0 && y >= 0 && y < grid.GetLength(0) && x < grid.GetLength(1);
+    private bool IsInBounds(int x, int y)
+    {
+        return x >= 0 && y >= 0 && y < grid.GetLength(0) && x < grid.GetLength(1);
+    }
 
     private int GetRectangleWeight(int rectangleLabel)
     {
-        Rectangle rectangle = rectangleMap[rectangleLabel];
+        if (!rectangleMap.TryGetValue(rectangleLabel, out Rectangle rectangle))
+        {
+            return int.MaxValue / 4;
+        }
+
         return Math.Max(1, weightGrid[rectangle.Y, rectangle.X]);
     }
 
@@ -222,37 +235,14 @@ public class Pathfinder
         return new Vector2(closestX, closestY);
     }
 
-    private Dictionary<int, List<int>> BuildGraphBaseline()
+    private Dictionary<int, List<int>> BuildGraphInternal()
     {
-        Dictionary<int, List<int>> graph = [];
-
-        foreach (KeyValuePair<int, Rectangle> rect1 in rectangleMap)
-        {
-            if (!graph.ContainsKey(rect1.Key))
-            {
-                graph[rect1.Key] = [];
-            }
-
-            foreach (KeyValuePair<int, Rectangle> rect2 in rectangleMap)
-            {
-                if (rect1.Key != rect2.Key && AreRectanglesAdjacent(rect1.Value, rect2.Value))
-                {
-                    graph[rect1.Key].Add(rect2.Key);
-                }
-            }
-        }
-
-        return graph;
-    }
-
-    private Dictionary<int, List<int>> BuildGraph()
-    {
-        var rectangleList = rectangleMap.ToList();
+        List<KeyValuePair<int, Rectangle>> rectangleList = rectangleMap.ToList();
         int count = rectangleList.Count;
 
         // Pre-allocate dictionary with empty lists
         Dictionary<int, List<int>> graph = [];
-        foreach (var (id, _) in rectangleList)
+        foreach ((int id, Rectangle _) in rectangleList)
         {
             graph[id] = [];
         }
@@ -262,11 +252,11 @@ public class Pathfinder
         {
             for (int i = 0; i < count; i++)
             {
-                var (id1, rect1) = rectangleList[i];
+                (int id1, Rectangle rect1) = rectangleList[i];
 
                 for (int j = i + 1; j < count; j++)
                 {
-                    var (id2, rect2) = rectangleList[j];
+                    (int id2, Rectangle rect2) = rectangleList[j];
 
                     // Quick bounding box check
                     if (rect1.Right >= rect2.Left && rect2.Right >= rect1.Left &&
@@ -290,15 +280,15 @@ public class Pathfinder
                 locks[i] = new object();
             }
 
-            var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+            ParallelOptions parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
 
-            Parallel.For(0, count, parallelOptions, i =>
+            _ = Parallel.For(0, count, parallelOptions, i =>
             {
-                var (id1, rect1) = rectangleList[i];
+                (int id1, Rectangle rect1) = rectangleList[i];
 
                 for (int j = i + 1; j < count; j++)
                 {
-                    var (id2, rect2) = rectangleList[j];
+                    (int id2, Rectangle rect2) = rectangleList[j];
 
                     // Quick bounding box check
                     if (rect1.Right >= rect2.Left && rect2.Right >= rect1.Left &&
@@ -331,15 +321,33 @@ public class Pathfinder
             return;
         }
 
+        // Capture incoming connections to affected zones before mutating adjacency lists.
+        Dictionary<int, List<int>> incomingByAffected = [];
+        foreach (int zoneId in affectedZones)
+        {
+            incomingByAffected[zoneId] = [];
+        }
+
+        foreach ((int zoneId, List<int> neighbors) in adjacencyList)
+        {
+            foreach (int neighbor in neighbors)
+            {
+                if (incomingByAffected.TryGetValue(neighbor, out List<int>? incoming))
+                {
+                    incoming.Add(zoneId);
+                }
+            }
+        }
+
         // Remove zones that no longer exist in rectangleMap
-        var orphanedZones = adjacencyList.Keys.Where(z => !rectangleMap.ContainsKey(z) && !rectanglesSource.ContainsKey(z)).ToList();
+        List<int> orphanedZones = adjacencyList.Keys.Where(z => !rectangleMap.ContainsKey(z) && !rectanglesSource.ContainsKey(z)).ToList();
         foreach (int zone in orphanedZones)
         {
-            adjacencyList.Remove(zone);
+            _ = adjacencyList.Remove(zone);
         }
 
         // Update rectangleMap with current state and collect all affected zones
-        HashSet<int> allAffected = [..affectedZones];
+        HashSet<int> allAffected = [.. affectedZones];
         foreach (int zoneId in affectedZones)
         {
             if (rectanglesSource.TryGetValue(zoneId, out Rectangle rect))
@@ -348,20 +356,17 @@ public class Pathfinder
             }
             else
             {
-                rectangleMap.Remove(zoneId);
-                adjacencyList.Remove(zoneId);
+                _ = rectangleMap.Remove(zoneId);
+                _ = adjacencyList.Remove(zoneId);
             }
         }
 
-        // Also collect zones that had connections to affected zones (they might need updates too)
-        foreach (int zoneId in affectedZones)
+        // Also collect zones that had connections to affected zones (they need adjacency refresh as well).
+        foreach ((int _, List<int> incoming) in incomingByAffected)
         {
-            if (adjacencyList.TryGetValue(zoneId, out var neighbors))
+            foreach (int neighbor in incoming)
             {
-                foreach (int neighbor in neighbors.ToList())
-                {
-                    allAffected.Add(neighbor);
-                }
+                _ = allAffected.Add(neighbor);
             }
         }
 
@@ -374,34 +379,39 @@ public class Pathfinder
             }
         }
 
-        // Clear adjacencies for all affected zones AND collect zones that referenced affected zones
+        // Clear adjacencies for all affected zones
         foreach (int zoneId in allAffected)
         {
             adjacencyList[zoneId].Clear();
         }
-        
-        // Also remove references FROM other zones TO affected zones
-        // (since those adjacencies will be recalculated if needed)
-        foreach (int otherZoneId in adjacencyList.Keys.ToList())
+
+        // Remove stale references to missing zones from all unaffected adjacency lists.
+        foreach ((int zoneId, List<int> neighbors) in adjacencyList)
         {
-            if (!allAffected.Contains(otherZoneId))
+            if (allAffected.Contains(zoneId))
             {
-                adjacencyList[otherZoneId].RemoveAll(z => affectedZones.Contains(z));
+                continue;
             }
+
+            _ = neighbors.RemoveAll(n => !rectangleMap.ContainsKey(n));
         }
 
         // Recalculate adjacencies between affected zones and all zones
-        var allZonesList = rectangleMap.ToList();
+        List<KeyValuePair<int, Rectangle>> allZonesList = rectangleMap.ToList();
 
         foreach (int zoneId in allAffected)
         {
             if (!rectangleMap.TryGetValue(zoneId, out Rectangle rect1))
+            {
                 continue;
+            }
 
-            foreach (var (otherId, rect2) in allZonesList)
+            foreach ((int otherId, Rectangle rect2) in allZonesList)
             {
                 if (otherId == zoneId)
+                {
                     continue;
+                }
 
                 if (rect1.Right >= rect2.Left && rect2.Right >= rect1.Left &&
                     rect1.Bottom >= rect2.Top && rect2.Bottom >= rect1.Top)
@@ -409,9 +419,14 @@ public class Pathfinder
                     if (AreRectanglesAdjacent(rect1, rect2))
                     {
                         if (!adjacencyList[zoneId].Contains(otherId))
+                        {
                             adjacencyList[zoneId].Add(otherId);
+                        }
+
                         if (!adjacencyList[otherId].Contains(zoneId))
+                        {
                             adjacencyList[otherId].Add(zoneId);
+                        }
                     }
                 }
             }
