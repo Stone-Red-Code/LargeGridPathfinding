@@ -461,7 +461,8 @@ public class LargeGridPathfindingGame : Game
             {
                 Color color = colorLookup[label % 28];
 
-                spriteBatch.FillRectangle(new Rectangle(rectangle.X * 10, rectangle.Y * 10, rectangle.Width * 10, rectangle.Height * 10), color, layerDepth: 0.2f);
+                spriteBatch.FillRectangle(new Rectangle(rectangle.X * 10, rectangle.Y * 10, rectangle.Width * 10, rectangle.Height * 10), Color.Lerp(color, Color.Gray, 0.55f), layerDepth: 0.2f);
+
             }
         }
 
@@ -479,7 +480,15 @@ public class LargeGridPathfindingGame : Game
                 {
                     float blendFactor = Math.Clamp((cellWeight - 1) / 8f, 0f, 1f);
                     Color weightColor = Color.Lerp(Color.LightYellow, Color.DarkOrange, blendFactor);
-                    spriteBatch.FillRectangle(cellRect, weightColor * 0.75f, layerDepth: 0.25f);
+
+                    if (showZones)
+                    {
+                        spriteBatch.DrawRectangle(cellRect, weightColor * 0.75f, layerDepth: 0.25f);
+                    }
+                    else
+                    {
+                        spriteBatch.FillRectangle(cellRect, weightColor * 0.75f, layerDepth: 0.25f);
+                    }
                 }
 
                 if (cellValue < 0)
