@@ -31,6 +31,24 @@ public class LargeGridPathfindingGame : Game
         RemoveObstacle
     }
 
+    private enum StartupMenuItem
+    {
+        GridWidth,
+        GridHeight,
+        AgentCount,
+        MapPreset,
+        ObstacleDivisor,
+        PathRandomization,
+        PenalizeStretchedRectangles
+    }
+
+    private enum StartupMapPreset
+    {
+        Rooms,
+        Empty,
+        WorstCase
+    }
+
     private readonly record struct PendingOperation(PendingOperationKind Kind, int Weight);
 
     private readonly ConcurrentDictionary<Vector2, Color> temporaryIndicators = [];
@@ -59,6 +77,16 @@ public class LargeGridPathfindingGame : Game
     private Point? fillSelectionStart;
     private Point? fillSelectionCurrent;
     private bool batchProcessingScheduled;
+    private bool startupMenuActive = true;
+    private readonly bool startupInitializationStarted;
+    private StartupMenuItem startupSelectedItem;
+    private int startupGridWidth = 1000;
+    private int startupGridHeight = 1000;
+    private int startupAgentCount = 1000;
+    private StartupMapPreset startupMapPreset = StartupMapPreset.Rooms;
+    private int startupObstacleDivisor = 2;
+    private bool startupPathRandomization;
+    private bool startupPenalizeStretchedRectangles;
 
     public LargeGridPathfindingGame()
     {
@@ -83,8 +111,6 @@ public class LargeGridPathfindingGame : Game
             MaximumZoom = 2,
             Zoom = 0.5f,
         };
-
-        StartInitializationTask();
 
         base.Initialize();
     }
@@ -153,6 +179,7 @@ public class LargeGridPathfindingGame : Game
 
         MouseStateExtended mouseState = MouseExtended.GetState();
         KeyboardStateExtended keyboardState = KeyboardExtended.GetState();
+        bool ctrlPressed = keyboardState.IsKeyDown(Keys.LeftControl) || keyboardState.IsKeyDown(Keys.RightControl);
         bool shiftPressed = keyboardState.IsKeyDown(Keys.LeftShift) || keyboardState.IsKeyDown(Keys.RightShift);
         bool shiftLeftDown = shiftPressed && mouseState.IsButtonDown(MouseButton.Left);
         bool shiftLeftClicked = shiftLeftDown && !wasShiftLeftDown;
@@ -160,6 +187,65 @@ public class LargeGridPathfindingGame : Game
         bool shiftRightClicked = shiftRightDown && !wasShiftRightDown;
         wasShiftLeftDown = shiftLeftDown;
         wasShiftRightDown = shiftRightDown;
+
+        if (startupMenuActive)
+        {
+            if (keyboardState.WasKeyPressed(Keys.Up))
+            {
+                startupSelectedItem = (StartupMenuItem)Math.Max(0, (int)startupSelectedItem - 1);
+            }
+            else if (keyboardState.WasKeyPressed(Keys.Down))
+            {
+                startupSelectedItem = (StartupMenuItem)Math.Min((int)StartupMenuItem.PenalizeStretchedRectangles, (int)startupSelectedItem + 1);
+            }
+
+            int direction = 0;
+            if (keyboardState.WasKeyPressed(Keys.Left))
+            {
+                direction = shiftPressed ? ctrlPressed ? -100 : -10 : -1;
+            }
+            else if (keyboardState.WasKeyPressed(Keys.Right))
+            {
+                direction = shiftPressed ? ctrlPressed ? 100 : 10 : 1;
+            }
+
+            if (direction != 0)
+            {
+                switch (startupSelectedItem)
+                {
+                    case StartupMenuItem.GridWidth:
+                        startupGridWidth = Math.Clamp(startupGridWidth + (direction * 100), 500, 30000);
+                        break;
+                    case StartupMenuItem.GridHeight:
+                        startupGridHeight = Math.Clamp(startupGridHeight + (direction * 100), 500, 30000);
+                        break;
+                    case StartupMenuItem.AgentCount:
+                        startupAgentCount = Math.Clamp(startupAgentCount + (direction * 100), 100, 200000);
+                        break;
+                    case StartupMenuItem.MapPreset:
+                        startupMapPreset = (StartupMapPreset)Math.Clamp((int)startupMapPreset + direction, (int)StartupMapPreset.Rooms, (int)StartupMapPreset.WorstCase);
+                        break;
+                    case StartupMenuItem.ObstacleDivisor:
+                        startupObstacleDivisor = Math.Clamp(startupObstacleDivisor + direction, 1, 50);
+                        break;
+                    case StartupMenuItem.PathRandomization:
+                        startupPathRandomization = direction > 0 || (direction >= 0 && startupPathRandomization);
+                        break;
+                    case StartupMenuItem.PenalizeStretchedRectangles:
+                        startupPenalizeStretchedRectangles = direction > 0 || (direction >= 0 && startupPenalizeStretchedRectangles);
+                        break;
+                }
+            }
+
+            if (keyboardState.WasKeyPressed(Keys.Enter))
+            {
+                startupMenuActive = false;
+                StartInitializationTask(startupGridWidth, startupGridHeight, startupAgentCount, startupMapPreset, startupObstacleDivisor, startupPathRandomization, startupPenalizeStretchedRectangles);
+            }
+
+            base.Update(gameTime);
+            return;
+        }
 
         float movementSpeed = (float)Math.Pow(200, 2 - camera.Zoom);
 
@@ -423,12 +509,52 @@ public class LargeGridPathfindingGame : Game
 
     protected override void Draw(GameTime gameTime)
     {
+        GraphicsDevice.Clear(Color.CornflowerBlue);
+
         if (gridFiller is null)
         {
+            uiSpriteBatch.Begin(SpriteSortMode.Deferred, samplerState: SamplerState.PointClamp);
+
+            if (startupMenuActive && !startupInitializationStarted)
+            {
+                uiSpriteBatch.DrawString(uiFont, "Startup Configuration", new Vector2(40, 30), Color.Black);
+                uiSpriteBatch.DrawString(uiFont, "Arrow Up/Down: Select  Arrow Left/Right: Change  Enter: Start", new Vector2(40, 60), Color.Black);
+
+                string[] lines =
+                [
+                    $"Grid Width: {startupGridWidth}",
+                    $"Grid Height: {startupGridHeight}",
+                    $"Agent Count: {startupAgentCount}",
+                    $"Map Preset: {startupMapPreset}",
+                    $"Obstacle Divisor: {startupObstacleDivisor} (lower = more obstacles)",
+                    $"Path Randomization: {startupPathRandomization}",
+                    $"Penalize Stretched Rectangles: {startupPenalizeStretchedRectangles}"
+                ];
+
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    Color color = i == (int)startupSelectedItem ? Color.DarkBlue : Color.Black;
+                    string prefix = i == (int)startupSelectedItem ? "# " : "  ";
+                    uiSpriteBatch.DrawString(uiFont, $"{prefix}{lines[i]}", new Vector2(40, 100 + (i * 28)), color);
+                }
+            }
+            else
+            {
+                uiSpriteBatch.DrawString(uiFont, "Initializing simulation...", new Vector2(40, 30), Color.Black);
+            }
+
+            IReadOnlyList<ProgressTracker.ProgressData> startupProgresses = progressTracker.GetProgresses();
+            for (int i = 0; i < startupProgresses.Count; i++)
+            {
+                ProgressTracker.ProgressData progressData = startupProgresses[i];
+                string progress = progressData.Indeterminate ? "..." : progressData.Progress.ToString("P0");
+                uiSpriteBatch.DrawString(uiFont, $"{progressData.Name}: {progress}", new Vector2(40, 300 + (i * 24)), Color.Black);
+            }
+
+            uiSpriteBatch.End();
+            base.Draw(gameTime);
             return;
         }
-
-        GraphicsDevice.Clear(Color.CornflowerBlue);
 
         Matrix transformMatrix = camera.GetViewMatrix();
 
@@ -464,7 +590,6 @@ public class LargeGridPathfindingGame : Game
                 Color color = colorLookup[label % 28];
 
                 spriteBatch.FillRectangle(new Rectangle(rectangle.X * 10, rectangle.Y * 10, rectangle.Width * 10, rectangle.Height * 10), Color.Lerp(color, Color.Gray, 0.55f), layerDepth: 0.2f);
-
             }
         }
 
@@ -623,18 +748,10 @@ public class LargeGridPathfindingGame : Game
         base.Draw(gameTime);
     }
 
-    private void StartInitializationTask()
+    private void StartInitializationTask(int width, int height, int agentCount, StartupMapPreset mapPreset, int obstacleDivisor, bool pathRandomization, bool penalizeStretchedRectangles)
     {
         _ = Task.Run(() =>
         {
-            // Configuration options
-            int width = 10000;
-            int height = 10000;
-            int agentCount = 10000;
-
-            bool pathRandomization = false; // Randomize path costs to prevent agents from following the same path
-            bool penalizeStretchedRectangles = false; // (EXPERIMENTAL) Penalize paths that go through stretched rectangles to prevent too many agents in a small area
-
             for (int i = 0; i < agentCount; i++)
             {
                 int x = Random.Shared.Next(0, width - 1);
@@ -645,76 +762,129 @@ public class LargeGridPathfindingGame : Game
 
             List<Rectangle> obstacles = [];
 
-            Debug.WriteLine("Generating random obstacles...");
-
-            // Generate room/building like obstacles with walls and doors
-
-            for (int i = 0; i < (width + height) / 2; i++)
+            if (mapPreset == StartupMapPreset.Rooms)
             {
-                int x = Random.Shared.Next(0, width - 1);
-                int y = Random.Shared.Next(0, height - 1);
-                int w = Random.Shared.Next(5, (width + height) / 100);
-                int h = Random.Shared.Next(5, (width + height) / 100);
+                Debug.WriteLine("Generating random obstacles...");
 
-                Rectangle wall1 = new(x, y, w, 1);            // Top wall
-                Rectangle wall2 = new(x, y, 1, h);            // Left wall
-                Rectangle wall3 = new(x + w - 1, y, 1, h); // Right wall
-                Rectangle wall4 = new(x, y + h - 1, w, 1); // Bottom wall
+                int obstacleIterations = Math.Max(0, (width + height) / Math.Max(1, obstacleDivisor));
+                int minObstacleSize = 5;
+                int minDimension = Math.Min(width, height);
+                int scaledByDimension = (int)Math.Round(Math.Pow(minDimension, 0.4) * 2.1);
+                int maxByDimension = Math.Max(minObstacleSize + 1, minDimension / 4);
+                int maxObstacleSize = Math.Max(minObstacleSize + 1, Math.Min(scaledByDimension, maxByDimension));
 
-                int doorSide = Random.Shared.Next(4); // Choose a random side for the door
-
-                if (doorSide == 0) // Bottom side
+                for (int i = 0; i < obstacleIterations; i++)
                 {
-                    obstacles.Add(wall1);
-                    obstacles.Add(wall2);
-                    obstacles.Add(wall3);
+                    int x = Random.Shared.Next(0, width - 1);
+                    int y = Random.Shared.Next(0, height - 1);
+                    int w = Random.Shared.Next(minObstacleSize, maxObstacleSize);
+                    int h = Random.Shared.Next(minObstacleSize, maxObstacleSize);
 
-                    int doorX = x + Random.Shared.Next(1, w - 2);
-                    Rectangle doorWall1 = new(x, y + h - 1, doorX - x, 1);
-                    Rectangle doorWall2 = new(doorX + 2, y + h - 1, x + w - (doorX + 2), 1);
+                    Rectangle wall1 = new(x, y, w, 1);
+                    Rectangle wall2 = new(x, y, 1, h);
+                    Rectangle wall3 = new(x + w - 1, y, 1, h);
+                    Rectangle wall4 = new(x, y + h - 1, w, 1);
 
-                    obstacles.Add(doorWall1);
-                    obstacles.Add(doorWall2);
+                    int doorSide = Random.Shared.Next(4);
+                    if (doorSide == 0)
+                    {
+                        obstacles.Add(wall1); obstacles.Add(wall2); obstacles.Add(wall3);
+                        int doorX = x + Random.Shared.Next(1, w - 2);
+                        obstacles.Add(new Rectangle(x, y + h - 1, doorX - x, 1));
+                        obstacles.Add(new Rectangle(doorX + 2, y + h - 1, x + w - (doorX + 2), 1));
+                    }
+                    else if (doorSide == 1)
+                    {
+                        obstacles.Add(wall2); obstacles.Add(wall3); obstacles.Add(wall4);
+                        int doorX = x + Random.Shared.Next(1, w - 2);
+                        obstacles.Add(new Rectangle(x, y, doorX - x, 1));
+                        obstacles.Add(new Rectangle(doorX + 2, y, x + w - (doorX + 2), 1));
+                    }
+                    else if (doorSide == 2)
+                    {
+                        obstacles.Add(wall1); obstacles.Add(wall3); obstacles.Add(wall4);
+                        int doorY = y + Random.Shared.Next(1, h - 2);
+                        obstacles.Add(new Rectangle(x, y, 1, doorY - y));
+                        obstacles.Add(new Rectangle(x, doorY + 2, 1, y + h - (doorY + 2)));
+                    }
+                    else
+                    {
+                        obstacles.Add(wall1); obstacles.Add(wall2); obstacles.Add(wall4);
+                        int doorY = y + Random.Shared.Next(1, h - 2);
+                        obstacles.Add(new Rectangle(x + w - 1, y, 1, doorY - y));
+                        obstacles.Add(new Rectangle(x + w - 1, doorY + 2, 1, y + h - (doorY + 2)));
+                    }
                 }
-                else if (doorSide == 1) // Top side
+            }
+            else if (mapPreset == StartupMapPreset.WorstCase)
+            {
+                Debug.WriteLine("Generating connected worst-case 3x3 rooms with offset doors...");
+                const int roomSize = 3;
+                const int pitch = roomSize + 1; // 3 walkable + 1 wall
+
+                for (int y = pitch; y < height; y += pitch)
                 {
-                    obstacles.Add(wall2);
-                    obstacles.Add(wall3);
-                    obstacles.Add(wall4);
+                    int runStart = 0;
+                    int rowIndex = y / pitch;
 
-                    int doorX = x + Random.Shared.Next(1, w - 2);
-                    Rectangle doorWall1 = new(x, y, doorX - x, 1);
-                    Rectangle doorWall2 = new(doorX + 2, y, x + w - (doorX + 2), 1);
+                    for (int x = 0; x < width; x++)
+                    {
+                        int local = x % pitch;
+                        int baseX = x - local;
+                        bool oddSegment = (baseX / pitch % 2) == 1;
+                        int offset = ((rowIndex % 2 == 0) ^ oddSegment) ? 1 : 3; // left/right offset
+                        bool isDoor = local == offset;
 
-                    obstacles.Add(doorWall1);
-                    obstacles.Add(doorWall2);
+                        if (isDoor)
+                        {
+                            if (x > runStart)
+                            {
+                                obstacles.Add(new Rectangle(runStart, y, x - runStart, 1));
+                            }
+
+                            runStart = x + 1;
+                        }
+                    }
+
+                    if (runStart < width)
+                    {
+                        obstacles.Add(new Rectangle(runStart, y, width - runStart, 1));
+                    }
                 }
-                else if (doorSide == 2) // Left side
+
+                for (int x = pitch; x < width; x += pitch)
                 {
-                    obstacles.Add(wall1);
-                    obstacles.Add(wall3);
-                    obstacles.Add(wall4);
+                    int runStart = 0;
+                    int colIndex = x / pitch;
 
-                    int doorY = y + Random.Shared.Next(1, h - 2);
-                    Rectangle doorWall1 = new(x, y, 1, doorY - y);
-                    Rectangle doorWall2 = new(x, doorY + 2, 1, y + h - (doorY + 2));
+                    for (int y = 0; y < height; y++)
+                    {
+                        int local = y % pitch;
+                        int baseY = y - local;
+                        bool oddSegment = (baseY / pitch % 2) == 1;
+                        int offset = ((colIndex % 2 == 0) ^ oddSegment) ? 1 : 3; // top/bottom offset
+                        bool isDoor = local == offset;
 
-                    obstacles.Add(doorWall1);
-                    obstacles.Add(doorWall2);
+                        if (isDoor)
+                        {
+                            if (y > runStart)
+                            {
+                                obstacles.Add(new Rectangle(x, runStart, 1, y - runStart));
+                            }
+
+                            runStart = y + 1;
+                        }
+                    }
+
+                    if (runStart < height)
+                    {
+                        obstacles.Add(new Rectangle(x, runStart, 1, height - runStart));
+                    }
                 }
-                else if (doorSide == 3) // Right side
-                {
-                    obstacles.Add(wall1);
-                    obstacles.Add(wall2);
-                    obstacles.Add(wall4);
-
-                    int doorY = y + Random.Shared.Next(1, h - 2);
-                    Rectangle doorWall1 = new(x + w - 1, y, 1, doorY - y);
-                    Rectangle doorWall2 = new(x + w - 1, doorY + 2, 1, y + h - (doorY + 2));
-
-                    obstacles.Add(doorWall1);
-                    obstacles.Add(doorWall2);
-                }
+            }
+            else
+            {
+                Debug.WriteLine("Using empty map preset.");
             }
 
             Debug.WriteLine("Initializing grid...");
