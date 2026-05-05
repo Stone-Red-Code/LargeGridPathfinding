@@ -626,8 +626,8 @@ public class LargeGridPathfindingGame : Game
         _ = Task.Run(() =>
         {
             // Configuration options
-            int width = 1000;
-            int height = 1000;
+            int width = 10000;
+            int height = 10000;
             int agentCount = 10000;
 
             bool pathRandomization = false; // Randomize path costs to prevent agents from following the same path

@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace LargeGridPathfinding;
 
-internal class GridFiller
+public class GridFiller
 {
     private const int RecalculationRadius = 24;
     private readonly object mutationLock = new();
@@ -107,7 +107,8 @@ internal class GridFiller
                 Debug.WriteLine($"Candidates: {candidates.Count}");
                 Debug.WriteLine("Sorting candidates...");
 
-                List<(int x, int y, int w, int h, int weight)> sortedCandidates = [.. candidates];
+                var sortedCandidates = new List<(int x, int y, int w, int h, int weight)>(candidates.Count);
+                sortedCandidates.AddRange(candidates);
                 sortedCandidates.Sort((a, b) =>
                 {
                     int areaComparison = (b.w * b.h).CompareTo(a.w * a.h);
@@ -186,7 +187,8 @@ internal class GridFiller
 
             foreach (Rectangle rectangle in clampedRectangles)
             {
-                for (int dy = rectangle.Top; dy < rectangle.Bottom; dy++)
+                int endY = rectangle.Bottom;
+                for (int dy = rectangle.Top; dy < endY; dy++)
                 {
                     for (int dx = rectangle.Left; dx < rectangle.Right; dx++)
                     {
@@ -210,8 +212,9 @@ internal class GridFiller
                     foreach (Rectangle rectangle in clampedRectangles)
                     {
                         int obstacle = currentObstacleLabel--;
+                        int endY = rectangle.Bottom;
 
-                        for (int dy = rectangle.Top; dy < rectangle.Bottom; dy++)
+                        for (int dy = rectangle.Top; dy < endY; dy++)
                         {
                             for (int dx = rectangle.Left; dx < rectangle.Right; dx++)
                             {
@@ -256,7 +259,8 @@ internal class GridFiller
 
             foreach (Rectangle rectangle in clampedRectangles)
             {
-                for (int dy = rectangle.Top; dy < rectangle.Bottom; dy++)
+                int endY = rectangle.Bottom;
+                for (int dy = rectangle.Top; dy < endY; dy++)
                 {
                     for (int dx = rectangle.Left; dx < rectangle.Right; dx++)
                     {
@@ -279,7 +283,8 @@ internal class GridFiller
                 {
                     foreach (Rectangle rectangle in clampedRectangles)
                     {
-                        for (int dy = rectangle.Top; dy < rectangle.Bottom; dy++)
+                        int endY = rectangle.Bottom;
+                        for (int dy = rectangle.Top; dy < endY; dy++)
                         {
                             for (int dx = rectangle.Left; dx < rectangle.Right; dx++)
                             {
@@ -358,15 +363,17 @@ internal class GridFiller
 
     private bool IsAreaFree(int x, int y, int w, int h, int requiredWeight)
     {
+        int gridRow = y;
         for (int dy = 0; dy < h; dy++)
         {
             for (int dx = 0; dx < w; dx++)
             {
-                if (Grid[y + dy, x + dx] != 0 || WeightGrid[y + dy, x + dx] != requiredWeight)
+                if (Grid[gridRow, x + dx] != 0 || WeightGrid[gridRow, x + dx] != requiredWeight)
                 {
                     return false;
                 }
             }
+            gridRow++;
         }
         return true;
     }
@@ -416,6 +423,10 @@ internal class GridFiller
                 bestHeight = h;
                 bestStretch = stretch;
             }
+            else if (area < bestArea && h > bestHeight * 2)
+            {
+                break;
+            }
         }
 
         return (bestWidth, bestHeight);
@@ -424,12 +435,14 @@ internal class GridFiller
     private void PlaceRectangle(Rectangle rectangle)
     {
         int label = currentLabel++;
+        int endY = rectangle.Y + rectangle.Height;
+        int endX = rectangle.X + rectangle.Width;
 
-        for (int dy = 0; dy < rectangle.Height; dy++)
+        for (int dy = rectangle.Y; dy < endY; dy++)
         {
-            for (int dx = 0; dx < rectangle.Width; dx++)
+            for (int dx = rectangle.X; dx < endX; dx++)
             {
-                Grid[rectangle.Y + dy, rectangle.X + dx] = label;
+                Grid[dy, dx] = label;
             }
         }
 
@@ -443,11 +456,14 @@ internal class GridFiller
             return Rectangle.Empty;
         }
 
-        for (int dy = 0; dy < rectangle.Height; dy++)
+        int endY = rectangle.Y + rectangle.Height;
+        int endX = rectangle.X + rectangle.Width;
+
+        for (int dy = rectangle.Y; dy < endY; dy++)
         {
-            for (int dx = 0; dx < rectangle.Width; dx++)
+            for (int dx = rectangle.X; dx < endX; dx++)
             {
-                Grid[rectangle.Y + dy, rectangle.X + dx] = 0;
+                Grid[dy, dx] = 0;
             }
         }
 
