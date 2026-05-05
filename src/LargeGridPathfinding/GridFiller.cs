@@ -21,7 +21,7 @@ internal class GridFiller
     public int Width { get; }
     public int Height { get; }
 
-    public GridFiller(int width, int height, List<Rectangle> obstacles)
+    public GridFiller(int width, int height)
     {
         Width = width;
         Height = height;
@@ -36,8 +36,6 @@ internal class GridFiller
                 WeightGrid[y, x] = 1;
             }
         }
-
-        PlaceObstacles(obstacles);
     }
 
     public void FillGrid(int? x1 = null, int? y1 = null, int? x2 = null, int? y2 = null, bool fillAll = false, IProgress<float>? totalProgress = null, IProgress<float>? calculatingCandidatesProgress = null, IProgress<float>? placingCandidatesProgress = null)
@@ -167,7 +165,7 @@ internal class GridFiller
         PlaceObstacles([rectangle]);
     }
 
-    public void PlaceObstacles(IEnumerable<Rectangle> rectangles)
+    public void PlaceObstacles(IEnumerable<Rectangle> rectangles, bool recalculate = true)
     {
         lock (mutationLock)
         {
@@ -207,7 +205,7 @@ internal class GridFiller
 
             if (changed)
             {
-                RecalculateAroundArea(minX, minY, maxX, maxY, () =>
+                RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
                     foreach (Rectangle rectangle in clampedRectangles)
                     {
@@ -237,7 +235,7 @@ internal class GridFiller
         RemoveObstacles([rectangle]);
     }
 
-    public void RemoveObstacles(IEnumerable<Rectangle> rectangles)
+    public void RemoveObstacles(IEnumerable<Rectangle> rectangles, bool recalculate = true)
     {
         lock (mutationLock)
         {
@@ -277,7 +275,7 @@ internal class GridFiller
 
             if (changed)
             {
-                RecalculateAroundArea(minX, minY, maxX, maxY, () =>
+                RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
                     foreach (Rectangle rectangle in clampedRectangles)
                     {
@@ -310,7 +308,7 @@ internal class GridFiller
         ResetTileWeights([new Point(x, y)]);
     }
 
-    public void SetTileWeights(IEnumerable<Point> points, int weight)
+    public void SetTileWeights(IEnumerable<Point> points, int weight, bool recalculate = true)
     {
         lock (mutationLock)
         {
@@ -337,7 +335,7 @@ internal class GridFiller
 
             if (changed)
             {
-                RecalculateAroundArea(minX, minY, maxX, maxY, () =>
+                RecalculateAroundArea(minX, minY, maxX, maxY, recalculate, () =>
                 {
                     foreach (Point point in points)
                     {
@@ -456,14 +454,14 @@ internal class GridFiller
         return rectangle;
     }
 
-    private void RecalculateAroundArea(int minX, int minY, int maxX, int maxY, Action applyChanges)
+    private void RecalculateAroundArea(int minX, int minY, int maxX, int maxY, bool enabled, Action applyChanges)
     {
         int left = int.Clamp(minX - RecalculationRadius, 0, Width);
         int top = int.Clamp(minY - RecalculationRadius, 0, Height);
         int right = int.Clamp(maxX + RecalculationRadius, 0, Width);
         int bottom = int.Clamp(maxY + RecalculationRadius, 0, Height);
 
-        if (left >= right || top >= bottom)
+        if (left >= right || top >= bottom || !enabled)
         {
             applyChanges();
             return;

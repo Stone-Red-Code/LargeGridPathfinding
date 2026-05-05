@@ -52,6 +52,10 @@ public class LargeGridPathfindingGame : Game
     private BrushMode brushMode = BrushMode.Weight;
     private int paintWeight = 5;
     private Vector2? previousMousePosition;
+    private bool wasShiftLeftDown;
+    private bool wasShiftRightDown;
+    private Point? fillSelectionStart;
+    private Point? fillSelectionCurrent;
     private bool batchProcessingScheduled;
 
     public LargeGridPathfindingGame()
@@ -147,6 +151,13 @@ public class LargeGridPathfindingGame : Game
 
         MouseStateExtended mouseState = MouseExtended.GetState();
         KeyboardStateExtended keyboardState = KeyboardExtended.GetState();
+        bool shiftPressed = keyboardState.IsKeyDown(Keys.LeftShift) || keyboardState.IsKeyDown(Keys.RightShift);
+        bool shiftLeftDown = shiftPressed && mouseState.IsButtonDown(MouseButton.Left);
+        bool shiftLeftClicked = shiftLeftDown && !wasShiftLeftDown;
+        bool shiftRightDown = shiftPressed && mouseState.IsButtonDown(MouseButton.Right);
+        bool shiftRightClicked = shiftRightDown && !wasShiftRightDown;
+        wasShiftLeftDown = shiftLeftDown;
+        wasShiftRightDown = shiftRightDown;
 
         float movementSpeed = (float)Math.Pow(200, 2 - camera.Zoom);
 
@@ -252,6 +263,73 @@ public class LargeGridPathfindingGame : Game
                 showGrid = showGridBefore;
                 showPaths = showPathsBefore;
             });
+        }
+
+        if (shiftPressed)
+        {
+            if (fillSelectionStart.HasValue && TryGetMouseGridPoint(mouseState, out Point hoverGridPoint))
+            {
+                fillSelectionCurrent = hoverGridPoint;
+            }
+            else
+            {
+                fillSelectionCurrent = null;
+            }
+
+            if ((shiftLeftClicked || shiftRightClicked) && TryGetMouseGridPoint(mouseState, out Point clickedGridPoint))
+            {
+                if (!fillSelectionStart.HasValue)
+                {
+                    fillSelectionStart = clickedGridPoint;
+                    fillSelectionCurrent = clickedGridPoint;
+                }
+                else
+                {
+                    List<Point> selectionPoints = GetRectanglePoints(fillSelectionStart.Value, clickedGridPoint);
+                    Color indicatorColor = brushMode == BrushMode.Weight ? Color.Orange : Color.Red;
+
+                    foreach (Point point in selectionPoints)
+                    {
+                        temporaryIndicators[point.ToVector2()] = indicatorColor;
+                    }
+
+                    PendingOperation operation;
+                    if (brushMode == BrushMode.Weight && shiftLeftClicked)
+                    {
+                        operation = new PendingOperation(PendingOperationKind.SetWeight, paintWeight);
+                    }
+                    else if (brushMode == BrushMode.Weight && shiftRightClicked)
+                    {
+                        operation = new PendingOperation(PendingOperationKind.ResetWeight, 0);
+                    }
+                    else if (brushMode == BrushMode.Obstacle && shiftLeftClicked)
+                    {
+                        operation = new PendingOperation(PendingOperationKind.PlaceObstacle, 0);
+                    }
+                    else if (brushMode == BrushMode.Obstacle && shiftRightClicked)
+                    {
+                        operation = new PendingOperation(PendingOperationKind.RemoveObstacle, 0);
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException("Invalid brush mode or mouse button state.");
+                    }
+
+                    EnqueuePendingOperations(selectionPoints, operation);
+                    fillSelectionStart = null;
+                    fillSelectionCurrent = null;
+                }
+            }
+
+            previousMousePosition = null;
+            base.Update(gameTime);
+            return;
+        }
+        else
+        {
+            fillSelectionStart = null;
+            fillSelectionCurrent = null;
+            fillSelectionCurrent = null;
         }
 
         // Paint and clear tiles via mouse input
@@ -420,6 +498,20 @@ public class LargeGridPathfindingGame : Game
                 }
             }
         }
+
+        if (fillSelectionStart.HasValue)
+        {
+            Point selectionEnd = fillSelectionCurrent ?? fillSelectionStart.Value;
+            int left = Math.Min(fillSelectionStart.Value.X, selectionEnd.X);
+            int top = Math.Min(fillSelectionStart.Value.Y, selectionEnd.Y);
+            int right = Math.Max(fillSelectionStart.Value.X, selectionEnd.X);
+            int bottom = Math.Max(fillSelectionStart.Value.Y, selectionEnd.Y);
+
+            Rectangle selectionRectangle = new Rectangle(left * 10, top * 10, (right - left + 1) * 10, (bottom - top + 1) * 10);
+            spriteBatch.FillRectangle(selectionRectangle, Color.LightBlue * 0.2f, layerDepth: 0.24f);
+            spriteBatch.DrawRectangle(selectionRectangle, Color.Blue, 2f, layerDepth: 0.19f);
+        }
+
         spriteBatch.End();
 
         // Draw paths in a separate batch if needed
@@ -478,6 +570,7 @@ public class LargeGridPathfindingGame : Game
         uiSpriteBatch.DrawString(uiFont, $"Agents: {agents.Count}", new Vector2(10, 70), Color.Black);
         uiSpriteBatch.DrawString(uiFont, $"Brush mode: {brushMode} [O]", new Vector2(10, 90), Color.Black);
         uiSpriteBatch.DrawString(uiFont, $"Weight: {paintWeight} [Keys 1-9, Weight mode]", new Vector2(10, 110), Color.Black);
+        uiSpriteBatch.DrawString(uiFont, "Area fill: hold Shift + left click twice", new Vector2(10, 130), Color.Black);
 
         IReadOnlyList<ProgressTracker.ProgressData> progresses = progressTracker.GetProgresses();
 
@@ -487,7 +580,7 @@ public class LargeGridPathfindingGame : Game
 
             string progress = progressData.Indeterminate ? "..." : progressData.Progress.ToString("P0");
 
-            uiSpriteBatch.DrawString(uiFont, $"{progressData.Name}: {progress}", new Vector2(10, 130 + (i * 20)), Color.Black);
+            uiSpriteBatch.DrawString(uiFont, $"{progressData.Name}: {progress}", new Vector2(10, 150 + (i * 20)), Color.Black);
         }
 
         uiSpriteBatch.End();
@@ -592,7 +685,8 @@ public class LargeGridPathfindingGame : Game
             Debug.WriteLine("Initializing grid...");
 
             ProgressTracker.ProgressData progressData = progressTracker.AddProgress("Initializing grid", true, out _);
-            gridFiller = new GridFiller(width, height, obstacles);
+            gridFiller = new GridFiller(width, height);
+            gridFiller.PlaceObstacles(obstacles, false);
             progressTracker.RemoveProgress(progressData);
 
             Debug.WriteLine("Filling grid...");
@@ -767,6 +861,41 @@ public class LargeGridPathfindingGame : Game
 
             gridChanged = true;
         }
+    }
+
+    private bool TryGetMouseGridPoint(MouseStateExtended mouseState, out Point gridPoint)
+    {
+        Vector2 mousePosition = camera.ScreenToWorld(mouseState.Position.ToVector2());
+        Point point = new Point((int)mousePosition.X / 10, (int)mousePosition.Y / 10);
+
+        if (point.X < 0 || point.X >= gridFiller.Width || point.Y < 0 || point.Y >= gridFiller.Height)
+        {
+            gridPoint = default;
+            return false;
+        }
+
+        gridPoint = point;
+        return true;
+    }
+
+    private static List<Point> GetRectanglePoints(Point start, Point end)
+    {
+        int minX = Math.Min(start.X, end.X);
+        int minY = Math.Min(start.Y, end.Y);
+        int maxX = Math.Max(start.X, end.X);
+        int maxY = Math.Max(start.Y, end.Y);
+
+        List<Point> points = new((maxX - minX + 1) * (maxY - minY + 1));
+
+        for (int y = minY; y <= maxY; y++)
+        {
+            for (int x = minX; x <= maxX; x++)
+            {
+                points.Add(new Point(x, y));
+            }
+        }
+
+        return points;
     }
 
     private static List<Point> GetBrushPoints(Vector2 currentGridPosition, Vector2? previousGridPosition)
