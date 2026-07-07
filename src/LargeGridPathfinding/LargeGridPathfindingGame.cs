@@ -82,7 +82,13 @@ public class LargeGridPathfindingGame : Game
     private OrthographicCamera camera = null!;
     private GridFiller gridFiller = null!;
     private Pathfinder pathfinder = null!;
+    private int frameCount;
     private bool gridChanged;
+    private const int SectorShift = 7;
+    private const int SectorSize = 1 << SectorShift;
+    private int sectorsX;
+    private int sectorsY;
+    private List<Agent>[,] agentSectors = null!;
     private bool inputBlocked = true;
     private bool showZones = true;
     private bool showGrid = false;
@@ -146,10 +152,10 @@ public class LargeGridPathfindingGame : Game
             return;
         }
 
+        frameCount++;
+
         if (pathfinder is not null)
         {
-            Trace.WriteLine($"Pending path results: {pendingPathResults.Count}, Affected zones: {affectedZones.Count}, Pending operations: {pendingOperations.Count}");
-
             // Drain pending path results — background thread enqueues, main thread applies
             while (pendingPathResults.TryDequeue(out (Agent agent, List<Vector2>? path) result))
             {
@@ -160,49 +166,171 @@ public class LargeGridPathfindingGame : Game
                 {
                     agent.Position = path[0];
                     agent.NextPosition = path.Count > 1 ? path[1] : path[0];
+                    agent.PathIndex = path.Count > 1 ? 1 : 0;
                     agent.Destination = new Point((int)path[^1].X, (int)path[^1].Y);
                 }
             }
 
-            // Update agent positions
-            foreach (Agent agent in agents)
+            // Update agent positions (sector-culled — only agents near the camera)
+            int[,] grid = gridFiller.Grid;
+            float dt = gameTime.GetElapsedSeconds();
+            float step = 10f * dt;
+            float sqrStep = step * step;
+
+            // Rebuild sectors periodically so agents crossing boundaries are repositioned
+            if ((frameCount & 127) == 0)
             {
-                if (agent.Path is null || agent.Path.Count < 2)
+                RebuildSectors();
+            }
+
+            // View culling bounds (cell coordinates — BoundingRectangle is in world units, /10 to match agent positions)
+            RectangleF viewBounds = camera.BoundingRectangle;
+            float margin = 5f;
+            float cellViewLeft = (viewBounds.Left / 10f) - margin;
+            float cellViewRight = (viewBounds.Right / 10f) + margin;
+            float cellViewTop = (viewBounds.Top / 10f) - margin;
+            float cellViewBottom = (viewBounds.Bottom / 10f) + margin;
+
+            int minSX = Math.Max(0, (int)(cellViewLeft / SectorSize) - 1);
+            int maxSX = Math.Min(sectorsX - 1, (int)(cellViewRight / SectorSize) + 1);
+            int minSY = Math.Max(0, (int)(cellViewTop / SectorSize) - 1);
+            int maxSY = Math.Min(sectorsY - 1, (int)(cellViewBottom / SectorSize) + 1);
+
+            for (int sx = minSX; sx <= maxSX; sx++)
+            {
+                for (int sy = minSY; sy <= maxSY; sy++)
+                {
+                    List<Agent>? sector = agentSectors[sx, sy];
+                    if (sector is null)
+                    {
+                        continue;
+                    }
+
+                    foreach (Agent agent in sector)
+                    {
+                        List<Vector2>? path = agent.Path;
+                        if (path is null || agent.PathIndex >= path.Count)
+                        {
+                            continue;
+                        }
+
+                        Vector2 currentPos = agent.Position;
+                        bool inView = currentPos.X >= cellViewLeft && currentPos.X <= cellViewRight
+                                   && currentPos.Y >= cellViewTop && currentPos.Y <= cellViewBottom;
+
+                        Vector2 targetPos = agent.NextPosition;
+                        float dx = targetPos.X - currentPos.X;
+                        float dy = targetPos.Y - currentPos.Y;
+                        float sqrDist = (dx * dx) + (dy * dy);
+
+                        if (sqrDist < 0.01f)
+                        {
+                            if (agent.PathIndex == path.Count - 1)
+                            {
+                                agent.Path = null;
+                                agent.Destination = null;
+                            }
+                            else
+                            {
+                                agent.NextPosition = path[++agent.PathIndex];
+                            }
+                        }
+                        else
+                        {
+                            Vector2 nextPosition;
+                            if (sqrDist <= sqrStep)
+                            {
+                                nextPosition = targetPos;
+                            }
+                            else
+                            {
+                                float t = step / MathF.Sqrt(sqrDist);
+                                nextPosition = new Vector2(currentPos.X + (dx * t), currentPos.Y + (dy * t));
+                            }
+
+                            agent.Position = nextPosition;
+
+                            if (inView)
+                            {
+                                int newX = (int)(nextPosition.X + 0.5f);
+                                int newY = (int)(nextPosition.Y + 0.5f);
+
+                                if (grid[newY, newX] < 0)
+                                {
+                                    agent.Path = null;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Off-screen agents: catch up the full elapsed distance (position only, no grid check)
+            int totalAgents = agents.Count;
+            int offScreenBudget = Math.Max(1000, totalAgents / 1000);
+            float catchUpStep = step * (totalAgents / (float)offScreenBudget);
+            int startIndex = (frameCount * offScreenBudget) % totalAgents;
+
+            for (int i = 0; i < offScreenBudget; i++)
+            {
+                Agent a = agents[(startIndex + i) % totalAgents];
+
+                List<Vector2>? p = a.Path;
+                if (p is null || a.PathIndex >= p.Count)
                 {
                     continue;
                 }
 
-                if (Vector2.Distance(agent.Position, agent.NextPosition) < 0.1)
+                Vector2 pos = a.Position;
+                if (pos.X >= cellViewLeft && pos.X <= cellViewRight
+                 && pos.Y >= cellViewTop && pos.Y <= cellViewBottom)
                 {
-                    if (agent.NextPosition == agent.Path[^1])
-                    {
-                        agent.Path = null;
-                        agent.Destination = null;
-                    }
-                    else
-                    {
-                        agent.NextPosition = agent.Path[agent.Path.LastIndexOf(agent.NextPosition) + 1];
-                    }
+                    continue;
                 }
-                else
+
+                float remaining = catchUpStep;
+
+                while (remaining > 0.01f)
                 {
-                    float distance = Vector2.Distance(agent.Position, agent.NextPosition);
-                    float lerpFactor = Math.Min(10 / distance * gameTime.GetElapsedSeconds(), 1);
+                    Vector2 currentPos = a.Position;
+                    Vector2 targetPos = a.NextPosition;
+                    float dx = targetPos.X - currentPos.X;
+                    float dy = targetPos.Y - currentPos.Y;
+                    float sqrDist = (dx * dx) + (dy * dy);
 
-                    Vector2 nextPosition = Vector2.Lerp(agent.Position, agent.NextPosition, lerpFactor);
-
-                    int newX = (int)Math.Round(nextPosition.X);
-                    int newY = (int)Math.Round(nextPosition.Y);
-
-                    int[,] grid = gridFiller.Grid;
-
-                    if (grid[newY, newX] < 0)
+                    if (sqrDist < 0.01f)
                     {
-                        agent.Path = null;
+                        if (a.PathIndex == p.Count - 1)
+                        {
+                            a.Path = null;
+                            a.Destination = null;
+                            break;
+                        }
+
+                        a.NextPosition = p[++a.PathIndex];
                         continue;
                     }
 
-                    agent.Position = nextPosition;
+                    if (sqrDist <= remaining * remaining)
+                    {
+                        a.Position = targetPos;
+                        remaining -= MathF.Sqrt(sqrDist);
+
+                        if (a.PathIndex == p.Count - 1)
+                        {
+                            a.Path = null;
+                            a.Destination = null;
+                            break;
+                        }
+
+                        a.NextPosition = p[++a.PathIndex];
+                    }
+                    else
+                    {
+                        float t = remaining / MathF.Sqrt(sqrDist);
+                        a.Position = new Vector2(currentPos.X + (dx * t), currentPos.Y + (dy * t));
+                        break;
+                    }
                 }
             }
         }
@@ -255,7 +383,7 @@ public class LargeGridPathfindingGame : Game
                         break;
 
                     case StartupMenuItem.AgentCount:
-                        startupAgentCount = Math.Clamp(startupAgentCount + (direction * 100), 100, 1000000);
+                        startupAgentCount = Math.Clamp(startupAgentCount + (direction * 1000), 100, 1000000);
                         break;
 
                     case StartupMenuItem.MapPreset:
@@ -689,55 +817,69 @@ public class LargeGridPathfindingGame : Game
 
         spriteBatch.End();
 
-        // Draw paths in a separate batch if needed
+        // Draw paths in a separate batch if needed (sector-culled)
         if (showPaths)
         {
             spriteBatch.Begin(SpriteSortMode.Deferred, samplerState: SamplerState.PointClamp, transformMatrix: transformMatrix);
 
-            // Cache bounds once — avoids repeated property access inside the loops
             float viewLeft = camera.BoundingRectangle.Left - 10;
             float viewRight = camera.BoundingRectangle.Right + 10;
             float viewTop = camera.BoundingRectangle.Top - 10;
             float viewBottom = camera.BoundingRectangle.Bottom + 10;
 
-            foreach (List<Vector2>? path in agents.Select(a => a.Path))
+            int pathMinSX = Math.Max(0, (int)((viewLeft / 10f) / SectorSize) - 1);
+            int pathMaxSX = Math.Min(sectorsX - 1, (int)((viewRight / 10f) / SectorSize) + 1);
+            int pathMinSY = Math.Max(0, (int)((viewTop / 10f) / SectorSize) - 1);
+            int pathMaxSY = Math.Min(sectorsY - 1, (int)((viewBottom / 10f) / SectorSize) + 1);
+
+            for (int sx = pathMinSX; sx <= pathMaxSX; sx++)
             {
-                if (path is null || path.Count < 2)
+                for (int sy = pathMinSY; sy <= pathMaxSY; sy++)
                 {
-                    continue;
-                }
-
-                for (int i = 0; i < path.Count - 1; i++)
-                {
-                    Vector2 start = (path[i] * 10) + new Vector2(5, 5);
-                    Vector2 end = (path[i + 1] * 10) + new Vector2(5, 5);
-
-                    bool startInView = start.X >= viewLeft && start.X <= viewRight
-                                    && start.Y >= viewTop && start.Y <= viewBottom;
-                    bool endInView = end.X >= viewLeft && end.X <= viewRight
-                                    && end.Y >= viewTop && end.Y <= viewBottom;
-
-                    // Skip segment only when both endpoints are outside the same edge
-                    bool segmentVisible = !((start.X < viewLeft && end.X < viewLeft) ||
-                                            (start.X > viewRight && end.X > viewRight) ||
-                                            (start.Y < viewTop && end.Y < viewTop) ||
-                                            (start.Y > viewBottom && end.Y > viewBottom));
-
-                    if (segmentVisible)
+                    List<Agent>? sector = agentSectors[sx, sy];
+                    if (sector is null)
                     {
-                        spriteBatch.DrawLine(start, end, Color.Gray, 2f, layerDepth: 0.1f);
+                        continue;
                     }
 
-                    // Draw each node exactly once: as the *start* of its segment.
-                    // The final node has no next segment, so draw it as the loop's last end.
-                    if (startInView)
+                    foreach (Agent agent in sector)
                     {
-                        spriteBatch.DrawCircle(start, 5, 10, i == 0 ? Color.Green : Color.Gray, 2f, layerDepth: 0.1f);
-                    }
+                        List<Vector2>? path = agent.Path;
+                        if (path is null || path.Count < 2)
+                        {
+                            continue;
+                        }
 
-                    if (i == path.Count - 2 && endInView)
-                    {
-                        spriteBatch.DrawCircle(end, 5, 10, Color.Red, 2f, layerDepth: 0.1f);
+                        for (int i = 0; i < path.Count - 1; i++)
+                        {
+                            Vector2 start = (path[i] * 10) + new Vector2(5, 5);
+                            Vector2 end = (path[i + 1] * 10) + new Vector2(5, 5);
+
+                            bool startInView = start.X >= viewLeft && start.X <= viewRight
+                                            && start.Y >= viewTop && start.Y <= viewBottom;
+                            bool endInView = end.X >= viewLeft && end.X <= viewRight
+                                            && end.Y >= viewTop && end.Y <= viewBottom;
+
+                            bool segmentVisible = !((start.X < viewLeft && end.X < viewLeft) ||
+                                                    (start.X > viewRight && end.X > viewRight) ||
+                                                    (start.Y < viewTop && end.Y < viewTop) ||
+                                                    (start.Y > viewBottom && end.Y > viewBottom));
+
+                            if (segmentVisible)
+                            {
+                                spriteBatch.DrawLine(start, end, Color.Gray, 2f, layerDepth: 0.1f);
+                            }
+
+                            if (startInView)
+                            {
+                                spriteBatch.DrawCircle(start, 5, 10, i == 0 ? Color.Green : Color.Gray, 2f, layerDepth: 0.1f);
+                            }
+
+                            if (i == path.Count - 2 && endInView)
+                            {
+                                spriteBatch.DrawCircle(end, 5, 10, Color.Red, 2f, layerDepth: 0.1f);
+                            }
+                        }
                     }
                 }
             }
@@ -745,17 +887,33 @@ public class LargeGridPathfindingGame : Game
             spriteBatch.End();
         }
 
-        // Draw agents
+        // Draw agents (sector-culled)
         spriteBatch.Begin(SpriteSortMode.Deferred, samplerState: SamplerState.PointClamp, transformMatrix: transformMatrix);
 
-        foreach (Vector2 currentPosition in agents.Select(a => a.Position))
-        {
-            if (currentPosition.X < xStart || currentPosition.X > xEnd || currentPosition.Y < yStart || currentPosition.Y > yEnd)
-            {
-                continue;
-            }
+        int drawMinSX = Math.Max(0, (int)(xStart / SectorSize) - 1);
+        int drawMaxSX = Math.Min(sectorsX - 1, (int)(xEnd / SectorSize) + 1);
+        int drawMinSY = Math.Max(0, (int)(yStart / SectorSize) - 1);
+        int drawMaxSY = Math.Min(sectorsY - 1, (int)(yEnd / SectorSize) + 1);
 
-            spriteBatch.DrawCircle((currentPosition + new Vector2(0.5f, 0.5f)) * 10, 5, 10, Color.Blue, 2f, layerDepth: 0.1f);
+        for (int sx = drawMinSX; sx <= drawMaxSX; sx++)
+        {
+            for (int sy = drawMinSY; sy <= drawMaxSY; sy++)
+            {
+                List<Agent>? sector = agentSectors[sx, sy];
+                if (sector is null)
+                {
+                    continue;
+                }
+
+                foreach (Agent agent in sector)
+                {
+                    Vector2 pos = agent.Position;
+                    if (pos.X >= xStart && pos.X <= xEnd && pos.Y >= yStart && pos.Y <= yEnd)
+                    {
+                        spriteBatch.DrawCircle((pos + new Vector2(0.5f, 0.5f)) * 10, 5, 10, Color.Blue, 2f, layerDepth: 0.1f);
+                    }
+                }
+            }
         }
 
         spriteBatch.End();
@@ -953,6 +1111,7 @@ public class LargeGridPathfindingGame : Game
             gridFiller.FillGrid(totalProgress: fillingGridProgressReporter, calculatingCandidatesProgress: calculatingCandidatesProgressReporter, placingCandidatesProgress: placingCandidatesProgressReporter);
 
             pathfinder = new Pathfinder(gridFiller.PlacedRectangles, gridFiller.Grid, gridFiller.WeightGrid, pathRandomization, penalizeStretchedRectangles);
+            RebuildSectors();
             gridChanged = true;
             inputBlocked = false;
             showZones = false;
@@ -1064,6 +1223,25 @@ public class LargeGridPathfindingGame : Game
                 }
             }
         }, TaskCreationOptions.LongRunning);
+    }
+
+    private void RebuildSectors()
+    {
+        int sx = (gridFiller.Width + SectorSize - 1) / SectorSize;
+        int sy = (gridFiller.Height + SectorSize - 1) / SectorSize;
+
+        List<Agent>[,] newSectors = new List<Agent>[sx, sy];
+
+        foreach (Agent agent in agents)
+        {
+            int x = Math.Clamp((int)(agent.Position.X / SectorSize), 0, sx - 1);
+            int y = Math.Clamp((int)(agent.Position.Y / SectorSize), 0, sy - 1);
+            (newSectors[x, y] ??= []).Add(agent);
+        }
+
+        sectorsX = sx;
+        sectorsY = sy;
+        agentSectors = newSectors;
     }
 
     private List<Vector2>? CalculatePath(Point? start = null, Point? goal = null)

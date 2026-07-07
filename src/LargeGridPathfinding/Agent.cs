@@ -34,4 +34,9 @@ internal class Agent(Vector2 position)
     /// Gets or sets the active path.
     /// </summary>
     public List<Vector2>? Path { get; set; }
+
+    /// <summary>
+    /// Index of the current target waypoint within Path.
+    /// </summary>
+    public int PathIndex { get; set; }
 }
