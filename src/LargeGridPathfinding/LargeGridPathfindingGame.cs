@@ -73,6 +73,7 @@ public class LargeGridPathfindingGame : Game
     private readonly object pendingOperationsLock = new();
     private readonly ProgressTracker progressTracker = new ProgressTracker();
     private readonly List<Agent> agents = [];
+    private readonly ConcurrentQueue<(Agent agent, List<Vector2>? path)> pendingPathResults = new();
     private readonly HashSet<int> affectedZones = [];
     private readonly object affectedZonesLock = new();
     private SpriteBatch spriteBatch = null!;
@@ -147,6 +148,22 @@ public class LargeGridPathfindingGame : Game
 
         if (pathfinder is not null)
         {
+            Trace.WriteLine($"Pending path results: {pendingPathResults.Count}, Affected zones: {affectedZones.Count}, Pending operations: {pendingOperations.Count}");
+
+            // Drain pending path results — background thread enqueues, main thread applies
+            while (pendingPathResults.TryDequeue(out (Agent agent, List<Vector2>? path) result))
+            {
+                Agent agent = result.agent;
+                List<Vector2>? path = result.path;
+                agent.Path = path;
+                if (path?.Count > 0)
+                {
+                    agent.Position = path[0];
+                    agent.NextPosition = path.Count > 1 ? path[1] : path[0];
+                    agent.Destination = new Point((int)path[^1].X, (int)path[^1].Y);
+                }
+            }
+
             // Update agent positions
             foreach (Agent agent in agents)
             {
@@ -238,7 +255,7 @@ public class LargeGridPathfindingGame : Game
                         break;
 
                     case StartupMenuItem.AgentCount:
-                        startupAgentCount = Math.Clamp(startupAgentCount + (direction * 100), 100, 200000);
+                        startupAgentCount = Math.Clamp(startupAgentCount + (direction * 100), 100, 1000000);
                         break;
 
                     case StartupMenuItem.MapPreset:
@@ -1008,7 +1025,7 @@ public class LargeGridPathfindingGame : Game
 
                         ParallelOptions parallelOptions = new ParallelOptions
                         {
-                            MaxDegreeOfParallelism = Environment.ProcessorCount
+                            MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 3 * 2)
                         };
 
                         long lastProgressReport = Environment.TickCount64;
@@ -1023,14 +1040,7 @@ public class LargeGridPathfindingGame : Game
                                     List<Vector2>? path = CalculatePath(agent.GridPosition, agent.Destination)
                                         ?? CalculatePath();
 
-                                    agent.Path = path;
-
-                                    if (path?.Count > 0)
-                                    {
-                                        agent.Position = path[0];
-                                        agent.NextPosition = path.Count > 1 ? path[1] : path[0];
-                                        agent.Destination = new Point((int)path[^1].X, (int)path[^1].Y);
-                                    }
+                                    pendingPathResults.Enqueue((agent, path));
                                 }
 
                                 int local = Interlocked.Add(ref pathsCalculated, range.Item2 - range.Item1);
@@ -1050,7 +1060,7 @@ public class LargeGridPathfindingGame : Game
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine(ex);
+                    Trace.WriteLine(ex);
                 }
             }
         }, TaskCreationOptions.LongRunning);

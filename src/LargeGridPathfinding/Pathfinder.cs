@@ -75,55 +75,72 @@ public class Pathfinder
             return null;
         }
 
-        PriorityQueue<(int node, List<int> path, int cost), int> queue = new();
-        HashSet<int> visited = [];
-        queue.Enqueue((start, new List<int> { start }, 0), 0);
-
         if (!rectangleMap.ContainsKey(start) || !rectangleMap.ContainsKey(goal))
         {
             Debug.WriteLine($"{(rectangleMap.ContainsKey(start) ? "Goal" : "Start")} rectangle not found.");
             return null;
         }
 
-        while (queue.Count > 0)
+        PriorityQueue<(int node, int cost), int> openSet = new();
+        Dictionary<int, int> gScore = [];
+        Dictionary<int, int> cameFrom = [];
+
+        gScore[start] = 0;
+        openSet.Enqueue((start, 0), 0);
+
+        while (openSet.Count > 0)
         {
-            (int node, List<int> path, int cost) = queue.Dequeue();
+            (int current, int currentCost) = openSet.Dequeue();
 
-            if (node == goal)
-            {
-                return BuildCoordinatePath(path, startPoint, goalPoint);
-            }
-
-            if (visited.Contains(node))
+            if (gScore.TryGetValue(current, out int bestG) && currentCost != bestG)
             {
                 continue;
             }
 
-            _ = visited.Add(node);
-
-            foreach (int neighbor in adjacencyList.TryGetValue(node, out List<int>? neighbors) ? neighbors : [])
+            if (current == goal)
             {
-                if (!visited.Contains(neighbor) && rectangleMap.ContainsKey(neighbor))
+                List<int> path = [];
+                int node = goal;
+                while (node != start)
                 {
-                    List<int> newPath = [.. path, neighbor];
-
-                    int newCost = cost + GetRectangleWeight(neighbor);
-
-                    if (penalizeStretchedRectangles)
-                    {
-                        Rectangle rectangle = rectangleMap[neighbor];
-                        newCost += Math.Max(rectangle.Width, rectangle.Height) / Math.Min(rectangle.Width, rectangle.Height);
-                    }
-
-                    int priority = newCost + GetHeuristicCost(neighbor, goal);
-
-                    if (pathRandomization)
-                    {
-                        priority += Random.Shared.Next(-1, 2);
-                    }
-
-                    queue.Enqueue((neighbor, newPath, newCost), priority);
+                    path.Add(node);
+                    node = cameFrom[node];
                 }
+                path.Add(start);
+                path.Reverse();
+                return BuildCoordinatePath(path, startPoint, goalPoint);
+            }
+
+            foreach (int neighbor in adjacencyList.TryGetValue(current, out List<int>? neighbors) ? neighbors : [])
+            {
+                if (!rectangleMap.ContainsKey(neighbor))
+                {
+                    continue;
+                }
+
+                int tentativeG = currentCost + GetRectangleWeight(neighbor);
+
+                if (penalizeStretchedRectangles)
+                {
+                    Rectangle rectangle = rectangleMap[neighbor];
+                    tentativeG += Math.Max(rectangle.Width, rectangle.Height) / Math.Min(rectangle.Width, rectangle.Height);
+                }
+
+                if (gScore.TryGetValue(neighbor, out int existingG) && tentativeG >= existingG)
+                {
+                    continue;
+                }
+
+                cameFrom[neighbor] = current;
+                gScore[neighbor] = tentativeG;
+                int priority = tentativeG + GetHeuristicCost(neighbor, goal);
+
+                if (pathRandomization)
+                {
+                    priority += Random.Shared.Next(-1, 2);
+                }
+
+                openSet.Enqueue((neighbor, tentativeG), priority);
             }
         }
 
