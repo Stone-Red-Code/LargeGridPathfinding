@@ -6,7 +6,7 @@ namespace LargeGridPathfinding;
 /// <summary>
 /// Tracks named progress entries for long-running operations.
 /// </summary>
-internal class ProgressTracker
+public class ProgressTracker
 {
     private readonly List<ProgressData> progresses = [];
 
