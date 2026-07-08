@@ -19,8 +19,11 @@ public class Pathfinder
     private readonly int[,] weightGrid;
     private readonly bool pathRandomization;
     private readonly bool penalizeStretchedRectangles;
+    private readonly ConcurrentDictionary<(int start, int goal), int[]> pathCache = new();
     private Dictionary<int, Rectangle> rectangleMap;
     private Dictionary<int, List<int>> adjacencyList;
+
+    public bool EnablePathCache { get; set; } = false;
 
     /// <summary>
     /// Returns the current zone adjacency list.
@@ -60,7 +63,7 @@ public class Pathfinder
     /// <summary>
     /// Finds a path between two grid points as coordinate waypoints.
     /// </summary>
-    public List<Vector2>? FindPath(Point startPoint, Point goalPoint)
+    public List<Vector2>? FindPath(Point startPoint, Point goalPoint, int maxNodes = int.MaxValue)
     {
         if (!IsInBounds(startPoint.X, startPoint.Y) || !IsInBounds(goalPoint.X, goalPoint.Y))
         {
@@ -81,6 +84,11 @@ public class Pathfinder
             return null;
         }
 
+        if (EnablePathCache && pathCache.TryGetValue((start, goal), out int[]? cachedZonePath))
+        {
+            return BuildCoordinatePath(cachedZonePath, startPoint, goalPoint);
+        }
+
         PriorityQueue<(int node, int cost), int> openSet = new();
         Dictionary<int, int> gScore = [];
         Dictionary<int, int> cameFrom = [];
@@ -88,7 +96,14 @@ public class Pathfinder
         gScore[start] = 0;
         openSet.Enqueue((start, 0), 0);
 
-        while (openSet.Count > 0)
+        if (!rectangleMap.TryGetValue(goal, out Rectangle goalRect))
+        {
+            return null;
+        }
+
+        int nodesVisited = 0;
+
+        while (openSet.Count > 0 && nodesVisited < maxNodes)
         {
             (int current, int currentCost) = openSet.Dequeue();
 
@@ -108,22 +123,31 @@ public class Pathfinder
                 }
                 path.Add(start);
                 path.Reverse();
+
+                // Cache for other agents with same zone pair
+                if (EnablePathCache)
+                {
+                    int[] zonePathArray = [.. path];
+                    _ = pathCache.TryAdd((start, goal), zonePathArray);
+                }
+
                 return BuildCoordinatePath(path, startPoint, goalPoint);
             }
 
+            nodesVisited++;
+
             foreach (int neighbor in adjacencyList.TryGetValue(current, out List<int>? neighbors) ? neighbors : [])
             {
-                if (!rectangleMap.ContainsKey(neighbor))
+                if (!rectangleMap.TryGetValue(neighbor, out Rectangle neighborRect))
                 {
                     continue;
                 }
 
-                int tentativeG = currentCost + GetRectangleWeight(neighbor);
+                int tentativeG = currentCost + Math.Max(1, weightGrid[neighborRect.Y, neighborRect.X]);
 
                 if (penalizeStretchedRectangles)
                 {
-                    Rectangle rectangle = rectangleMap[neighbor];
-                    tentativeG += Math.Max(rectangle.Width, rectangle.Height) / Math.Min(rectangle.Width, rectangle.Height);
+                    tentativeG += Math.Max(neighborRect.Width, neighborRect.Height) / Math.Min(neighborRect.Width, neighborRect.Height);
                 }
 
                 if (gScore.TryGetValue(neighbor, out int existingG) && tentativeG >= existingG)
@@ -133,7 +157,9 @@ public class Pathfinder
 
                 cameFrom[neighbor] = current;
                 gScore[neighbor] = tentativeG;
-                int priority = tentativeG + GetHeuristicCost(neighbor, goal);
+
+                int priority = tentativeG + Math.Abs(neighborRect.Center.X - goalRect.Center.X)
+                             + Math.Abs(neighborRect.Center.Y - goalRect.Center.Y);
 
                 if (pathRandomization)
                 {
@@ -155,6 +181,10 @@ public class Pathfinder
         rectangleMap = new Dictionary<int, Rectangle>(rectanglesSource);
         adjacencyList.Clear();
         adjacencyList = BuildGraphInternal();
+        if (EnablePathCache)
+        {
+            pathCache.Clear();
+        }
     }
 
     private bool IsInBounds(int x, int y)
@@ -359,6 +389,11 @@ public class Pathfinder
         if (affectedZones.Count == 0)
         {
             return;
+        }
+
+        if (EnablePathCache)
+        {
+            pathCache.Clear();
         }
 
         // Capture incoming connections to affected zones before mutating adjacency lists.

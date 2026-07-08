@@ -257,6 +257,7 @@ public class LargeGridPathfindingGame : Game
 
                                 if (grid[newY, newX] < 0)
                                 {
+                                    agent.Position = currentPos;
                                     agent.Path = null;
                                 }
                             }
@@ -269,7 +270,7 @@ public class LargeGridPathfindingGame : Game
             int totalAgents = agents.Count;
             int offScreenBudget = Math.Max(1000, totalAgents / 1000);
             float catchUpStep = step * (totalAgents / (float)offScreenBudget);
-            int startIndex = (frameCount * offScreenBudget) % totalAgents;
+            int startIndex = frameCount * offScreenBudget % totalAgents;
 
             for (int i = 0; i < offScreenBudget; i++)
             {
@@ -827,10 +828,10 @@ public class LargeGridPathfindingGame : Game
             float viewTop = camera.BoundingRectangle.Top - 10;
             float viewBottom = camera.BoundingRectangle.Bottom + 10;
 
-            int pathMinSX = Math.Max(0, (int)((viewLeft / 10f) / SectorSize) - 1);
-            int pathMaxSX = Math.Min(sectorsX - 1, (int)((viewRight / 10f) / SectorSize) + 1);
-            int pathMinSY = Math.Max(0, (int)((viewTop / 10f) / SectorSize) - 1);
-            int pathMaxSY = Math.Min(sectorsY - 1, (int)((viewBottom / 10f) / SectorSize) + 1);
+            int pathMinSX = Math.Max(0, (int)(viewLeft / 10f / SectorSize) - 1);
+            int pathMaxSX = Math.Min(sectorsX - 1, (int)(viewRight / 10f / SectorSize) + 1);
+            int pathMinSY = Math.Max(0, (int)(viewTop / 10f / SectorSize) - 1);
+            int pathMaxSY = Math.Min(sectorsY - 1, (int)(viewBottom / 10f / SectorSize) + 1);
 
             for (int sx = pathMinSX; sx <= pathMaxSX; sx++)
             {
@@ -890,10 +891,10 @@ public class LargeGridPathfindingGame : Game
         // Draw agents (sector-culled)
         spriteBatch.Begin(SpriteSortMode.Deferred, samplerState: SamplerState.PointClamp, transformMatrix: transformMatrix);
 
-        int drawMinSX = Math.Max(0, (int)(xStart / SectorSize) - 1);
-        int drawMaxSX = Math.Min(sectorsX - 1, (int)(xEnd / SectorSize) + 1);
-        int drawMinSY = Math.Max(0, (int)(yStart / SectorSize) - 1);
-        int drawMaxSY = Math.Min(sectorsY - 1, (int)(yEnd / SectorSize) + 1);
+        int drawMinSX = Math.Max(0, (xStart / SectorSize) - 1);
+        int drawMaxSX = Math.Min(sectorsX - 1, (xEnd / SectorSize) + 1);
+        int drawMinSY = Math.Max(0, (yStart / SectorSize) - 1);
+        int drawMaxSY = Math.Min(sectorsY - 1, (yEnd / SectorSize) + 1);
 
         for (int sx = drawMinSX; sx <= drawMaxSX; sx++)
         {
@@ -1178,13 +1179,14 @@ public class LargeGridPathfindingGame : Game
                     if (agentsRequirePathList.Count != 0)
                     {
                         int agentCount = agentsRequirePathList.Count;
+
                         int batchSize = Math.Max(64, agentCount / (Environment.ProcessorCount * 4));
 
                         ProgressTracker.ProgressData progressDataPaths = progressTracker.AddProgress($"Calculating {agentCount} paths", out IProgress<float> progress);
 
                         ParallelOptions parallelOptions = new ParallelOptions
                         {
-                            MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 3 * 2)
+                            MaxDegreeOfParallelism = Environment.ProcessorCount
                         };
 
                         long lastProgressReport = Environment.TickCount64;
@@ -1196,8 +1198,7 @@ public class LargeGridPathfindingGame : Game
                                 {
                                     Agent agent = agentsRequirePathList[i];
 
-                                    List<Vector2>? path = CalculatePath(agent.GridPosition, agent.Destination)
-                                        ?? CalculatePath();
+                                    List<Vector2>? path = CalculatePath(agent.GridPosition, agent.Destination, maxNodes: int.MaxValue) ?? CalculatePath(maxNodes: int.MaxValue);
 
                                     pendingPathResults.Enqueue((agent, path));
                                 }
@@ -1215,7 +1216,10 @@ public class LargeGridPathfindingGame : Game
                         progressTracker.RemoveProgress(progressDataPaths);
                     }
 
-                    await Task.Delay(100);
+                    if (agentsRequirePathList.Count < 1000)
+                    {
+                        await Task.Delay(100);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1244,19 +1248,31 @@ public class LargeGridPathfindingGame : Game
         agentSectors = newSectors;
     }
 
-    private List<Vector2>? CalculatePath(Point? start = null, Point? goal = null)
+    private List<Vector2>? CalculatePath(Point? start = null, Point? goal = null, int maxNodes = int.MaxValue)
     {
         int width = gridFiller.Width;
         int height = gridFiller.Height;
-        int startX = Random.Shared.Next(0, width - 1);
-        int startY = Random.Shared.Next(0, height - 1);
-        int goalX = Random.Shared.Next(0, width - 1);
-        int goalY = Random.Shared.Next(0, height - 1);
+        int[,] g = gridFiller.Grid;
 
-        start ??= new Point(startX, startY);
-        goal ??= new Point(goalX, goalY);
+        if (start is null)
+        {
+            do
+            {
+                start = new Point(Random.Shared.Next(0, width - 1), Random.Shared.Next(0, height - 1));
+            }
+            while (g[start.Value.Y, start.Value.X] <= 0);
+        }
 
-        return pathfinder.FindPath(start.Value, goal.Value);
+        if (goal is null)
+        {
+            do
+            {
+                goal = new Point(Random.Shared.Next(0, width - 1), Random.Shared.Next(0, height - 1));
+            }
+            while (g[goal.Value.Y, goal.Value.X] <= 0);
+        }
+
+        return pathfinder.FindPath(start.Value, goal.Value, maxNodes);
     }
 
     private void EnqueuePendingOperations(IEnumerable<Point> points, PendingOperation operation)
